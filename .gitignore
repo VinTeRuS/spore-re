@@ -1,0 +1,8 @@
+# never commit game assets or anything derived from the game binary
+*.package
+*.exe
+*.dll
+ghidra/
+build/
+re/decomp/
+__pycache__/
