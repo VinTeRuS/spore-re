@@ -197,6 +197,52 @@ static inline uint32_t Mask(int bits) { return bits == 32 ? 0xffffffffu : ((1u <
 static inline XmmValue RecompLoad128(uint32_t a) { XmmValue v; memcpy(&v, G(a), 16); return v; }
 static inline void RecompStore128(uint32_t a, XmmValue v) { memcpy(G(a), &v, 16); }
 
+/* Bulk memory (inlined CRT memcpy/memmove/memset, rep movs/stos): plain host memmove/memset between fences, so the
+ * block as a whole keeps x86's ordering against the accesses around it (the bytes inside need no order of their own:
+ * x86 makes no promise about them either). */
+static inline uint32_t RecompMemmove(uint32_t d, uint32_t s, uint32_t n) {
+    __atomic_thread_fence(__ATOMIC_ACQ_REL);
+    memmove(G(d), G(s), n);
+    __atomic_thread_fence(__ATOMIC_ACQ_REL);
+    return d;
+}
+static inline uint32_t RecompMemset(uint32_t d, uint32_t v, uint32_t n) {
+    __atomic_thread_fence(__ATOMIC_ACQ_REL);
+    memset(G(d), (int)(v & 0xffu), n);
+    __atomic_thread_fence(__ATOMIC_ACQ_REL);
+    return d;
+}
+/* rep movs with DF clear: 1 when done in one block (source and destination do not overlap), 0 to fall back to the
+ * element loop. */
+static inline int RecompRepMovs(Ctx* c, uint32_t width) {
+    uint32_t n = c->ecx * width, d = c->edi, s = c->esi;
+    if (!c->ecx) return 1;
+    if (!(d + n <= s || s + n <= d) || n / width != c->ecx) return 0;
+    RecompMemmove(d, s, n);
+    c->esi = s + n;
+    c->edi = d + n;
+    c->ecx = 0;
+    return 1;
+}
+/* rep stos with DF clear: a byte fill, or a pattern for words/dwords. */
+static inline int RecompRepStos(Ctx* c, uint32_t width) {
+    uint32_t count = c->ecx, d = c->edi;
+    if (!count) return 1;
+    if (count * width / width != count) return 0;
+    __atomic_thread_fence(__ATOMIC_ACQ_REL);
+    if (width == 1) {
+        memset(G(d), (int)(c->eax & 0xffu), count);
+    } else {
+        uint32_t v = width == 4 ? c->eax : (c->eax & 0xffffu) * 0x00010001u;
+        uint8_t* p = G(d);
+        for (uint32_t i = 0; i < count; ++i) memcpy(p + (size_t)i * width, &v, width);
+    }
+    __atomic_thread_fence(__ATOMIC_ACQ_REL);
+    c->edi = d + count * width;
+    c->ecx = 0;
+    return 1;
+}
+
 /* Flag helpers exist twice: on the context, and on a function's local copy of the flags (RFlags, see RLOCALS),
  * which the host compiler keeps in registers. Same bodies; only the flag fields are used. */
 typedef struct RFlags {
