@@ -781,9 +781,31 @@ C(abort) { Fatal("abort() from %08x", R32(c->esp)); }
 C(_amsg_exit) { Fatal("_amsg_exit(%u)", Arg(c, 0)); }
 C(_purecall) { Fatal("pure virtual call from %08x", R32(c->esp)); }
 C(terminate) { Fatal("terminate() from %08x", R32(c->esp)); }
+// Printable guest string at a (or "" when it does not look like one), for exception diagnostics.
+std::string MaybeString(uint32_t a) {
+    if (a < 0x10000 || a >= 0x80000000u) return "";
+    std::string out;
+    for (uint32_t i = 0; i < 160; ++i) {
+        uint8_t ch = R8(a + i);
+        if (!ch) break;
+        if (ch < 0x20 && ch != '\n' && ch != '\t') return "";
+        out += char(ch);
+    }
+    return out.size() >= 3 ? out : "";
+}
 C(_CxxThrowException) {
-    Fatal("C++ exception thrown from %08x (object %08x, type %08x): not supported yet", R32(c->esp), Arg(c, 0),
-          Arg(c, 1));
+    // Not supported yet: log what was thrown (the object's dwords and any strings they point to) before stopping.
+    uint32_t obj = Arg(c, 0);
+    Log("C++ exception from %08x: object %08x, throw info %08x", R32(c->esp), obj, Arg(c, 1));
+    for (uint32_t i = 0; obj && i < 16; ++i) {
+        uint32_t v = R32(obj + 4 * i);
+        std::string str = MaybeString(v);
+        if (str.empty()) {  // one level deeper: a pointer to a structure holding a string pointer
+            for (uint32_t k = 0; k < 4 && str.empty(); ++k) str = v >= 0x10000 && v < 0x80000000u ? MaybeString(R32(v + 4 * k)) : "";
+        }
+        Log("  +%02x: %08x %s", 4 * i, v, str.c_str());
+    }
+    Fatal("C++ exception thrown from %08x (object %08x, type %08x): not supported yet", R32(c->esp), obj, Arg(c, 1));
 }
 C(__CppXcptFilter) { Return(c, 0); }
 C(_except_handler4_common) { Return(c, 1); }  // ExceptionContinueSearch
