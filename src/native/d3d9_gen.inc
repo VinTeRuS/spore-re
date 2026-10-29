@@ -731,7 +731,8 @@ static void h_IDirect3DQuery9_GetDevice(Ctx* c) { IDirect3DDevice9* out1 = nullp
 static void h_IDirect3DQuery9_GetType(Ctx* c) { auto r = Host<IDirect3DQuery9>(Arg(c, 0))->GetType();  Return(c, (uint32_t)r, 1); }
 static void h_IDirect3DQuery9_GetDataSize(Ctx* c) { auto r = Host<IDirect3DQuery9>(Arg(c, 0))->GetDataSize();  Return(c, (uint32_t)r, 1); }
 static void h_IDirect3DQuery9_Issue(Ctx* c) { auto r = Host<IDirect3DQuery9>(Arg(c, 0))->Issue((DWORD)Arg(c, 1));  Return(c, (uint32_t)r, 2); }
-static void h_IDirect3DQuery9_GetData(Ctx* c) { auto r = Host<IDirect3DQuery9>(Arg(c, 0))->GetData(Ptr<void>(Arg(c, 1)), (DWORD)Arg(c, 2), (DWORD)Arg(c, 3));  Return(c, (uint32_t)r, 4); }
+void Manual_IDirect3DQuery9_GetData(Ctx* c);
+static void h_IDirect3DQuery9_GetData(Ctx* c) { Manual_IDirect3DQuery9_GetData(c); }
 static const MethodDef kMethods_IDirect3DQuery9[] = {
     {"QueryInterface", h_IDirect3DQuery9_QueryInterface},
     {"AddRef", h_IDirect3DQuery9_AddRef},

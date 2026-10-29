@@ -897,6 +897,25 @@ extern "C" JNIEXPORT void JNICALL Java_com_sporere_game_ProtoSurface_nativeSurfa
 bool WaitForWindow(int) { return true; }
 #endif
 
+// Spore waits for the GPU at the end of a frame by calling GetData on an event query in a tight loop (millions of
+// calls a second on the desktop). The answer is the same, but polling costs a whole core and battery on a phone:
+// only the first miss of a streak flushes (D3DGETDATA_FLUSH makes DXVK submit), later misses yield the core and,
+// for a longer wait, sleep a little.
+M(IDirect3DQuery9, GetData) {
+    static thread_local uint32_t misses = 0;
+    DWORD flags = Arg(c, 3);
+    if (misses > 0) flags &= ~D3DGETDATA_FLUSH;
+    HRESULT r = Host<IDirect3DQuery9>(Arg(c, 0))->GetData(Ptr<void>(Arg(c, 1)), Arg(c, 2), flags);
+    if (r == S_FALSE) {
+        ++misses;
+        if (misses > 256) std::this_thread::sleep_for(std::chrono::microseconds(100));
+        else if (misses > 16) std::this_thread::yield();
+    } else {
+        misses = 0;
+    }
+    Return(c, uint32_t(r), 4);
+}
+
 M(IDirect3DDevice9, Present) {
     ++g_present_count;
     uint64_t frame = g_frames.fetch_add(1, std::memory_order_relaxed) + 1;  // the watchdog's frame counter (main.cpp)
