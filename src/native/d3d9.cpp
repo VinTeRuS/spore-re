@@ -919,6 +919,53 @@ bool WaitForWindow(int) { return true; }
 // calls a second on the desktop). The answer is the same, but polling costs a whole core and battery on a phone:
 // only the first miss of a streak flushes (D3DGETDATA_FLUSH makes DXVK submit), later misses yield the core and,
 // for a longer wait, sleep a little.
+// fake_gpu = <vendor hex>:<device hex>:<description> (SPORERE_FAKE_GPU): report another adapter to the game, to
+// reproduce on the desktop what the game does with a phone GPU (its configuration scripts pick settings by vendor
+// and device id).
+M(IDirect3D9, GetAdapterIdentifier) {
+    auto* id = reinterpret_cast<D3DADAPTER_IDENTIFIER9*>(Ptr<void>(Arg(c, 3)));
+    HRESULT r = Host<IDirect3D9>(Arg(c, 0))->GetAdapterIdentifier(Arg(c, 1), Arg(c, 2), id);
+    static const std::string fake = Setting("fake_gpu", "");
+    if (SUCCEEDED(r) && !fake.empty()) {
+        unsigned vendor = 0, device = 0;
+        char desc[256] = {0};
+        if (sscanf(fake.c_str(), "%x:%x:%255[^\n]", &vendor, &device, desc) >= 2) {
+            id->VendorId = vendor;
+            id->DeviceId = device;
+            if (desc[0]) snprintf(id->Description, sizeof id->Description, "%s", desc);
+        }
+    }
+    // The game's configuration scripts only know AMD, NVIDIA, Intel and S3 adapters (Config/VideoCards.txt): for any
+    // other vendor (phone GPUs: ARM Mali, Qualcomm Adreno, Imagination) the script stops with "Unknown variable:
+    // 'isCardFound'". Such adapters are reported as a mid-range card from that table, a Radeon HD 2600, so the game
+    // finds a card and picks moderate settings.
+    if (SUCCEEDED(r)) {
+        switch (id->VendorId) {
+            case 0x1002: case 0x10de: case 0x10b4: case 0x12d2: case 0x8086: case 0x5333: break;
+            default: {
+                static bool logged = false;
+                if (!logged) {
+                    logged = true;
+                    Log("d3d9: adapter \"%s\" (vendor %04x) is unknown to the game; reported as Radeon HD 2600",
+                        id->Description, unsigned(id->VendorId));
+                }
+                id->VendorId = 0x1002;
+                id->DeviceId = 0x9588;
+                snprintf(id->Description, sizeof id->Description, "ATI Radeon HD 2600");
+            }
+        }
+    }
+    if (SUCCEEDED(r)) {
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            Log("d3d9: adapter \"%s\" vendor %04x device %04x driver %s", id->Description, unsigned(id->VendorId),
+                unsigned(id->DeviceId), id->Driver);
+        }
+    }
+    Return(c, uint32_t(r), 4);
+}
+
 M(IDirect3DQuery9, GetData) {
     static thread_local uint32_t misses = 0;
     DWORD flags = Arg(c, 3);

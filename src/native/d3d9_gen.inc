@@ -5,7 +5,8 @@ static void h_IDirect3D9_AddRef(Ctx* c) { auto r = Host<IDirect3D9>(Arg(c, 0))->
 static void h_IDirect3D9_Release(Ctx* c) { ReleaseImpl<IDirect3D9>(c); }
 static void h_IDirect3D9_RegisterSoftwareDevice(Ctx* c) { auto r = Host<IDirect3D9>(Arg(c, 0))->RegisterSoftwareDevice(Ptr<void>(Arg(c, 1)));  Return(c, (uint32_t)r, 2); }
 static void h_IDirect3D9_GetAdapterCount(Ctx* c) { auto r = Host<IDirect3D9>(Arg(c, 0))->GetAdapterCount();  Return(c, (uint32_t)r, 1); }
-static void h_IDirect3D9_GetAdapterIdentifier(Ctx* c) { auto r = Host<IDirect3D9>(Arg(c, 0))->GetAdapterIdentifier((UINT)Arg(c, 1), (DWORD)Arg(c, 2), reinterpret_cast<D3DADAPTER_IDENTIFIER9*>(Ptr<void>(Arg(c, 3))));  Return(c, (uint32_t)r, 4); }
+void Manual_IDirect3D9_GetAdapterIdentifier(Ctx* c);
+static void h_IDirect3D9_GetAdapterIdentifier(Ctx* c) { Manual_IDirect3D9_GetAdapterIdentifier(c); }
 void Manual_IDirect3D9_GetAdapterModeCount(Ctx* c);
 static void h_IDirect3D9_GetAdapterModeCount(Ctx* c) { Manual_IDirect3D9_GetAdapterModeCount(c); }
 void Manual_IDirect3D9_EnumAdapterModes(Ctx* c);
