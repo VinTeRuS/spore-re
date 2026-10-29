@@ -254,7 +254,7 @@ D3DPRESENT_PARAMETERS ToHost(uint32_t g) {
 #ifdef __ANDROID__
     const bool windowed = true;
 #else
-    const bool windowed = getenv("PROTORE_WINDOWED") != nullptr;
+    const bool windowed = getenv("SPORERE_WINDOWED") != nullptr;
 #endif
     if (windowed) {
         p.Windowed = TRUE;
@@ -862,6 +862,9 @@ extern "C" JNIEXPORT void JNICALL Java_com_protore_game_ProtoSurface_nativeSurfa
     std::lock_guard<std::mutex> lock(g_present_mutex);
     g_surface_gone = false;
 }
+#else
+// Desktop: the window stays on screen.
+bool WaitForWindow(int) { return true; }
 #endif
 
 M(IDirect3DDevice9, Present) {

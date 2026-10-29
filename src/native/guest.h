@@ -73,6 +73,8 @@ struct ImportDef {
 uint32_t ImportThunk(const char* dll, const char* name);
 // True and runs the handler when `target` is an import thunk.
 bool DispatchImport(Ctx* ctx, uint32_t target);
+// True when the host implements dll!name (GetProcAddress: NULL for everything else, as on Windows).
+bool HasImport(const char* dll, const char* name);
 void RegisterImports(const ImportDef* defs, size_t count);
 
 // Argument i (0-based) of an import call: [esp + 4 + 4*i].

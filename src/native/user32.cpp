@@ -145,38 +145,8 @@ struct Timer {
 std::vector<Timer> g_timers;  // under g_mutex
 std::map<uint32_t, uint32_t> g_window_parent;
 
-std::string WideToUtf8(uint32_t a) {
-    std::string out;
-    if (!a) return out;
-    if (a < 0x10000) return "#" + std::to_string(a);  // atom
-    for (uint32_t p = a;; p += 2) {
-        uint32_t ch = R16(p);
-        if (!ch) break;
-        if (ch >= 0xd800 && ch < 0xdc00) {
-            uint32_t lo = R16(p + 2);
-            if (lo >= 0xdc00 && lo < 0xe000) {
-                ch = 0x10000 + ((ch - 0xd800) << 10) + (lo - 0xdc00);
-                p += 2;
-            }
-        }
-        if (ch < 0x80) {
-            out += char(ch);
-        } else if (ch < 0x800) {
-            out += char(0xc0 | ch >> 6);
-            out += char(0x80 | (ch & 0x3f));
-        } else if (ch < 0x10000) {
-            out += char(0xe0 | ch >> 12);
-            out += char(0x80 | ((ch >> 6) & 0x3f));
-            out += char(0x80 | (ch & 0x3f));
-        } else {
-            out += char(0xf0 | ch >> 18);
-            out += char(0x80 | ((ch >> 12) & 0x3f));
-            out += char(0x80 | ((ch >> 6) & 0x3f));
-            out += char(0x80 | (ch & 0x3f));
-        }
-    }
-    return out;
-}
+// Class and window names: an atom, or a UTF-16 string (win.h WideToUtf8).
+std::string ClassName(uint32_t a) { return a < 0x10000 ? "#" + std::to_string(a) : WideToUtf8(a); }
 
 uint32_t WindowProc(uint32_t hwnd) {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -271,7 +241,7 @@ uint32_t CreateWindowCommon(uint32_t exstyle, const std::string& cls, uint32_t n
 
 U(RegisterClassExW) {
     uint32_t wc = Arg(c, 0);
-    std::string n = WideToUtf8(R32(wc + 40));
+    std::string n = ClassName(R32(wc + 40));
     std::lock_guard<std::mutex> lock(g_mutex);
     g_classes[n] = R32(wc + 8);
     Return(c, 0xc000u + uint32_t(g_classes.size()), 1);
@@ -285,7 +255,7 @@ U(RegisterClassA) {
     Return(c, 0xc000u + uint32_t(g_classes.size()), 1);
 }
 U(CreateWindowExW) {
-    uint32_t r = CreateWindowCommon(Arg(c, 0), WideToUtf8(Arg(c, 1)), Arg(c, 2), Arg(c, 3), int32_t(Arg(c, 4)),
+    uint32_t r = CreateWindowCommon(Arg(c, 0), ClassName(Arg(c, 1)), Arg(c, 2), Arg(c, 3), int32_t(Arg(c, 4)),
                                     int32_t(Arg(c, 5)), int32_t(Arg(c, 6)), int32_t(Arg(c, 7)), Arg(c, 8), Arg(c, 9),
                                     Arg(c, 10), Arg(c, 11));
     Return(c, r, 12);
@@ -514,6 +484,84 @@ U(GetKeyboardState) {
     Return(c, 1, 1);
 }
 
+// wsprintfW: %s is a UTF-16 string here (%S and %hs narrow), %c a UTF-16 unit; numbers as in printf. The result is
+// written as UTF-16 (at most 1024 units, wsprintf's own limit).
+std::string WideFormat(uint32_t fmt, uint32_t args) {
+    std::string f = WideToUtf8(fmt), out;
+    for (size_t i = 0; i < f.size();) {
+        if (f[i] != '%') {
+            out += f[i++];
+            continue;
+        }
+        if (i + 1 < f.size() && f[i + 1] == '%') {
+            out += '%';
+            i += 2;
+            continue;
+        }
+        size_t j = i + 1;
+        std::string spec = "%";
+        while (j < f.size() && strchr("-+ #0", f[j])) spec += f[j++];
+        while (j < f.size() && isdigit((unsigned char)f[j])) spec += f[j++];
+        if (j < f.size() && f[j] == '.') {
+            spec += f[j++];
+            while (j < f.size() && isdigit((unsigned char)f[j])) spec += f[j++];
+        }
+        bool narrow = false;
+        if (j < f.size() && (f[j] == 'l' || f[j] == 'h')) narrow = f[j++] == 'h';
+        if (j + 2 < f.size() && f.compare(j, 3, "I64") == 0) {
+            j += 3;
+            char conv = f[j++];
+            uint64_t v = uint64_t(R32(args)) | uint64_t(R32(args + 4)) << 32;
+            args += 8;
+            char buf[64];
+            snprintf(buf, sizeof buf, (spec + "ll" + conv).c_str(), (unsigned long long)v);
+            out += buf;
+            i = j;
+            continue;
+        }
+        char conv = j < f.size() ? f[j++] : 's';
+        char buf[512];
+        if (conv == 's' || conv == 'S') {
+            uint32_t p = R32(args);
+            args += 4;
+            std::string v = !p ? "(null)" : (conv == 'S' || narrow) ? std::string(Str(p)) : WideToUtf8(p);
+            snprintf(buf, sizeof buf, (spec + "s").c_str(), v.c_str());
+            out += buf;
+        } else if (conv == 'c' || conv == 'C') {
+            uint32_t ch = R32(args) & 0xffff;
+            args += 4;
+            uint32_t tmp = HeapAlloc(4);
+            W16(tmp, uint16_t(ch));
+            W16(tmp + 2, 0);
+            out += WideToUtf8(tmp);
+            HeapFree(tmp);
+        } else {
+            snprintf(buf, sizeof buf, (spec + conv).c_str(), R32(args));
+            args += 4;
+            out += buf;
+        }
+        i = j;
+    }
+    return out;
+}
+U(wsprintfW) {
+    std::string s = WideFormat(Arg(c, 1), c->esp + 12);
+    Return(c, PutWideString(Arg(c, 0), 1025, s));  // cdecl
+}
+U(EnumDisplayDevicesA) {
+    uint32_t index = Arg(c, 1), dd = Arg(c, 2);  // DISPLAY_DEVICEA: cb, DeviceName[32], DeviceString[128], ...
+    if (index != 0 || !dd) {
+        Return(c, 0, 4);
+        return;
+    }
+    uint32_t cb = R32(dd);
+    memset(Ptr<uint8_t>(dd) + 4, 0, cb > 4 ? cb - 4 : 0);
+    strcpy(Str(dd + 4), "\\\\.\\DISPLAY1");
+    strcpy(Str(dd + 36), "Vulkan (DXVK)");
+    W32(dd + 164, 0x5);  // DISPLAY_DEVICE_ATTACHED_TO_DESKTOP | DISPLAY_DEVICE_PRIMARY_DEVICE
+    Return(c, 1, 4);
+}
+
 #undef U
 
 #define E(name) {"user32.dll", #name, u_##name}
@@ -534,7 +582,8 @@ const ImportDef kUser32[] = {
     E(GetUserObjectInformationW), E(SetWindowsHookExA), E(UnhookWindowsHookEx), E(CallNextHookEx), E(MessageBoxW),
     E(IsDlgButtonChecked), E(CheckDlgButton), E(OpenClipboard), E(CloseClipboard), E(EmptyClipboard),
     E(GetClipboardData), E(SetClipboardData), E(IsClipboardFormatAvailable), E(SetClipboardViewer),
-    E(ChangeClipboardChain), E(GetKeyState), E(GetAsyncKeyState), E(GetKeyboardState),
+    E(ChangeClipboardChain), E(GetKeyState), E(GetAsyncKeyState), E(GetKeyboardState), E(wsprintfW),
+    E(EnumDisplayDevicesA),
     {"user32.dll", "SetWindowLongW", u_SetWindowLongA}, {"user32.dll", "GetWindowLongW", u_GetWindowLongA},
 };
 #undef E

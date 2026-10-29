@@ -832,10 +832,396 @@ C(type_info_before) { Return(c, strcmp(Str(c->ecx + 8), Str(Arg(c, 0) + 8)) < 0 
 C(type_info_name) { Return(c, c->ecx + 8, 1); }
 C(type_info_dtor) { Return(c, 0); }
 
+
+
+// ---- MSVCR90 additions for SporeApp.exe: CRT startup, wide strings, aligned heap, threads ----
+C(__set_app_type) { Return(c, 0); }
+C(__setusermatherr) { Return(c, 0); }
+C(_configthreadlocale) { Return(c, 2); }  // _DISABLE_PER_THREAD_LOCALE: one locale for the process
+C(_invoke_watson) { Fatal("_invoke_watson from %08x (invalid CRT parameter)", R32(c->esp)); }
+C(_XcptFilter) { Return(c, 0); }  // EXCEPTION_CONTINUE_SEARCH
+C(_cexit) {
+    for (auto it = g_onexit.rbegin(); it != g_onexit.rend(); ++it) GuestCall(*it, {});
+    g_onexit.clear();
+    Return(c, 0);
+}
+uint32_t g_fmode = 0, g_commode = 0;
+C(__p__fmode) {
+    if (!g_fmode) g_fmode = HeapAlloc(4), W32(g_fmode, 0);
+    Return(c, g_fmode);
+}
+C(__p__commode) {
+    if (!g_commode) g_commode = HeapAlloc(4), W32(g_commode, 0);
+    Return(c, g_commode);
+}
+// __getmainargs(int* argc, char*** argv, char*** env, int expand, _startupinfo*)
+C(__getmainargs) {
+    static uint32_t argv = 0, envp = 0;
+    if (!argv) {
+        argv = HeapAlloc(8);
+        W32(argv, GuestStrdup("C:\\Game\\SporebinEP1\\SporeApp.exe"));
+        W32(argv + 4, 0);
+        envp = HeapAlloc(4);
+        W32(envp, 0);
+    }
+    W32(Arg(c, 0), 1);
+    W32(Arg(c, 1), argv);
+    W32(Arg(c, 2), envp);
+    Return(c, 0);
+}
+C(_ismbblead) { Return(c, 0); }  // single-byte code page
+C(_setmbcp) { Return(c, 0); }
+C(setlocale) {
+    static uint32_t name = GuestStrdup("C");
+    Return(c, name);
+}
+C(signal) { Return(c, 0); }  // SIG_DFL as the previous handler
+C(_getch) { Return(c, 0x0d); }
+C(getenv) { Return(c, 0); }
+C(tmpfile) { Return(c, 0); }
+C(_getdrive) { Return(c, 3); }  // C:
+C(_control87) {
+    // Only the precision/rounding bits matter to recompiled x87 code (c->fpu_cw); exceptions stay masked.
+    uint32_t value = Arg(c, 0), mask = Arg(c, 1);
+    uint32_t cw = c->fpu_cw;
+    // _MCW_RC 0x300 <-> RC bits 10-11, _MCW_PC 0x30000 <-> PC bits 8-9 (_PC_24 0x20000 = single, _PC_53 0x10000).
+    uint32_t rc = (cw >> 10) & 3, pc = (cw >> 8) & 3;
+    uint32_t cur = (rc << 8) | (pc == 0 ? 0x20000u : pc == 2 ? 0x10000u : 0u) | 0x9001fu;
+    uint32_t next = (cur & ~mask) | (value & mask);
+    rc = (next >> 8) & 3;
+    pc = (next & 0x30000u) == 0x20000u ? 0 : (next & 0x30000u) == 0x10000u ? 2 : 3;
+    c->fpu_cw = uint16_t((cw & ~0x0f00u) | (rc << 10) | (pc << 8));
+    Return(c, next);
+}
+C(_controlfp) { m__control87(c); }
+C(strcmp) { Return(c, uint32_t(strcmp(Str(Arg(c, 0)), Str(Arg(c, 1))))); }
+C(isprint) { Return(c, Arg(c, 0) >= 0x20 && Arg(c, 0) < 0x7f ? 1 : 0); }
+C(atol) { Return(c, uint32_t(atoi(Str(Arg(c, 0))))); }
+C(vsprintf) {
+    std::string s = GuestFormat(Str(Arg(c, 1)), Arg(c, 2));
+    memcpy(Str(Arg(c, 0)), s.c_str(), s.size() + 1);
+    Return(c, uint32_t(s.size()));
+}
+C(vfprintf) {
+    std::string s = GuestFormat(Str(Arg(c, 1)), Arg(c, 2));
+    Log("vfprintf: %s", s.c_str());
+    Return(c, uint32_t(s.size()));
+}
+C(printf) {
+    std::string s = GuestFormat(Str(Arg(c, 0)), c->esp + 8);
+    Log("printf: %s", s.c_str());
+    Return(c, uint32_t(s.size()));
+}
+std::string IntToBase(uint64_t v, unsigned radix, bool negative) {
+    std::string r;
+    do {
+        unsigned d = unsigned(v % radix);
+        r += char(d < 10 ? '0' + d : 'a' + d - 10);
+        v /= radix;
+    } while (v);
+    if (negative) r += '-';
+    return std::string(r.rbegin(), r.rend());
+}
+C(_ltoa) {
+    int32_t v = int32_t(Arg(c, 0));
+    unsigned radix = Arg(c, 2);
+    bool neg = radix == 10 && v < 0;
+    std::string r = IntToBase(neg ? uint64_t(-int64_t(v)) : uint64_t(uint32_t(v)), radix, neg);
+    strcpy(Str(Arg(c, 1)), r.c_str());
+    Return(c, Arg(c, 1));
+}
+C(_ultoa) {
+    std::string r = IntToBase(Arg(c, 0), Arg(c, 2), false);
+    strcpy(Str(Arg(c, 1)), r.c_str());
+    Return(c, Arg(c, 1));
+}
+C(_ltow) {
+    int32_t v = int32_t(Arg(c, 0));
+    unsigned radix = Arg(c, 2);
+    bool neg = radix == 10 && v < 0;
+    PutWideString(Arg(c, 1), 34, IntToBase(neg ? uint64_t(-int64_t(v)) : uint64_t(uint32_t(v)), radix, neg));
+    Return(c, Arg(c, 1));
+}
+C(_ultow) {
+    PutWideString(Arg(c, 1), 34, IntToBase(Arg(c, 0), Arg(c, 2), false));
+    Return(c, Arg(c, 1));
+}
+C(_finite) {
+    double v = RF64(c->esp + 4);
+    Return(c, std::isfinite(v) ? 1 : 0);
+}
+C(_CIsin) { c->st[c->st_top] = sin(c->st[c->st_top]); c->ret_target = Pop32(c); }
+C(_CIlog) { c->st[c->st_top] = log(c->st[c->st_top]); c->ret_target = Pop32(c); }
+// _ecvt/_fcvt(double, digits, int* decpt, int* sign): digits without the point, in a per-thread buffer.
+std::string Cvt(double v, int digits, bool fixed, int* decpt, int* sign) {
+    *sign = std::signbit(v) ? 1 : 0;
+    v = fabs(v);
+    char buf[512];
+    if (fixed) snprintf(buf, sizeof buf, "%.*f", digits < 0 ? 0 : digits, v);
+    else snprintf(buf, sizeof buf, "%.*e", digits > 0 ? digits - 1 : 0, v);
+    std::string mant;
+    int exp10 = 0;
+    if (fixed) {
+        std::string t(buf);
+        size_t dot = t.find('.');
+        std::string ip = dot == std::string::npos ? t : t.substr(0, dot);
+        std::string fp = dot == std::string::npos ? "" : t.substr(dot + 1);
+        size_t nz = ip.find_first_not_of('0');
+        ip = nz == std::string::npos ? "" : ip.substr(nz);
+        mant = ip + fp;
+        exp10 = int(ip.size());
+    } else {
+        std::string t(buf);
+        size_t e = t.find('e');
+        for (char ch : t.substr(0, e)) if (ch != '.') mant += ch;
+        exp10 = atoi(t.c_str() + e + 1) + 1;
+    }
+    *decpt = v == 0 ? 0 : exp10;
+    return mant;
+}
+C(_ecvt) {
+    static thread_local uint32_t buf = 0;
+    if (!buf) buf = HeapAlloc(512);
+    int decpt, sign;
+    std::string m = Cvt(RF64(c->esp + 4), int32_t(Arg(c, 2)), false, &decpt, &sign);
+    strcpy(Str(buf), m.c_str());
+    W32(Arg(c, 3), uint32_t(decpt));
+    W32(Arg(c, 4), uint32_t(sign));
+    Return(c, buf);
+}
+C(_fcvt) {
+    static thread_local uint32_t buf = 0;
+    if (!buf) buf = HeapAlloc(512);
+    int decpt, sign;
+    std::string m = Cvt(RF64(c->esp + 4), int32_t(Arg(c, 2)), true, &decpt, &sign);
+    strcpy(Str(buf), m.c_str());
+    W32(Arg(c, 3), uint32_t(decpt));
+    W32(Arg(c, 4), uint32_t(sign));
+    Return(c, buf);
+}
+// Aligned heap: the block's start (for free) sits in the dword before the aligned pointer.
+C(_aligned_malloc) {
+    uint32_t size = Arg(c, 0), align = Arg(c, 1) < 4 ? 4 : Arg(c, 1);
+    uint32_t raw = HeapAlloc(size + align + 4);
+    if (!raw) {
+        Return(c, 0);
+        return;
+    }
+    uint32_t p = (raw + 4 + align - 1) & ~(align - 1);
+    W32(p - 4, raw);
+    Return(c, p);
+}
+C(_aligned_free) {
+    if (Arg(c, 0)) HeapFree(R32(Arg(c, 0) - 4));
+    Return(c, 0);
+}
+C(_aligned_realloc) {
+    uint32_t old = Arg(c, 0), size = Arg(c, 1), align = Arg(c, 2) < 4 ? 4 : Arg(c, 2);
+    if (!old) {
+        uint32_t raw = HeapAlloc(size + align + 4), p = (raw + 4 + align - 1) & ~(align - 1);
+        W32(p - 4, raw);
+        Return(c, p);
+        return;
+    }
+    uint32_t raw_old = R32(old - 4);
+    uint32_t avail = HeapSize(raw_old) - (old - raw_old);
+    uint32_t raw = HeapAlloc(size + align + 4), p = (raw + 4 + align - 1) & ~(align - 1);
+    W32(p - 4, raw);
+    memcpy(Ptr<void>(p), Ptr<void>(old), avail < size ? avail : size);
+    HeapFree(raw_old);
+    Return(c, p);
+}
+C(_beginthreadex) { BeginThreadEx(c); }
+C(_time64) {
+    uint64_t t = uint64_t(time(nullptr));
+    if (Arg(c, 0)) W64(Arg(c, 0), t);
+    c->edx = uint32_t(t >> 32);
+    Return(c, uint32_t(t));
+}
+C(_time32) {
+    uint32_t t = uint32_t(time(nullptr));
+    if (Arg(c, 0)) W32(Arg(c, 0), t);
+    Return(c, t);
+}
+struct tm ReadTm(uint32_t a) {
+    struct tm t {};
+    t.tm_sec = int(R32(a)); t.tm_min = int(R32(a + 4)); t.tm_hour = int(R32(a + 8)); t.tm_mday = int(R32(a + 12));
+    t.tm_mon = int(R32(a + 16)); t.tm_year = int(R32(a + 20)); t.tm_wday = int(R32(a + 24));
+    t.tm_yday = int(R32(a + 28)); t.tm_isdst = int(R32(a + 32));
+    return t;
+}
+C(_mktime64) {
+    struct tm t = ReadTm(Arg(c, 0));
+    uint64_t v = uint64_t(int64_t(mktime(&t)));
+    c->edx = uint32_t(v >> 32);
+    Return(c, uint32_t(v));
+}
+C(strftime) {
+    struct tm t = ReadTm(Arg(c, 3));
+    char buf[1024];
+    size_t n = strftime(buf, sizeof buf < Arg(c, 1) ? sizeof buf : Arg(c, 1), Str(Arg(c, 2)), &t);
+    memcpy(Str(Arg(c, 0)), buf, n + 1);
+    Return(c, uint32_t(n));
+}
+// ---- stat ----
+void WriteStat64i32(uint32_t b, const struct stat& st) {
+    // struct _stat64i32: dev, ino(16), mode(16), nlink(16), uid, gid, rdev, size (32), atime/mtime/ctime (64)
+    memset(Ptr<void>(b), 0, 48);
+    uint16_t mode = (S_ISDIR(st.st_mode) ? 0x4000 : 0x8000) | 0x100 | ((st.st_mode & S_IWUSR) ? 0x80 : 0);
+    W16(b + 6, mode);
+    W16(b + 8, 1);
+    W32(b + 20, uint32_t(st.st_size));
+    W64(b + 24, uint64_t(st.st_atime));
+    W64(b + 32, uint64_t(st.st_mtime));
+    W64(b + 40, uint64_t(st.st_ctime));
+}
+void StatCommon(Ctx* c, const std::string& guest_path) {
+    struct stat st;
+    if (stat(HostPath(guest_path.c_str()).c_str(), &st) != 0) {
+        Errno() = 2;
+        Return(c, 0xffffffffu);
+        return;
+    }
+    WriteStat64i32(Arg(c, 1), st);
+    Return(c, 0);
+}
+C(_stat64i32) { StatCommon(c, Str(Arg(c, 0))); }
+C(_wstat64i32) { StatCommon(c, WideToUtf8(Arg(c, 0))); }
+C(_wgetcwd) {
+    uint32_t buf = Arg(c, 0), size = Arg(c, 1);
+    if (!buf) buf = HeapAlloc(size = 520);
+    PutWideString(buf, size, GuestCurrentDir());
+    Return(c, buf);
+}
+C(_wgetdcwd) {
+    uint32_t buf = Arg(c, 1), size = Arg(c, 2);
+    if (!buf) buf = HeapAlloc(size = 520);
+    PutWideString(buf, size, GuestCurrentDir());
+    Return(c, buf);
+}
+C(_searchenv) { Str(Arg(c, 2))[0] = 0; Return(c, 0); }
+C(_wsearchenv) { W16(Arg(c, 2), 0); Return(c, 0); }
+C(_spawnv) {
+    Log("_spawnv(%s): not supported", Str(Arg(c, 1)));
+    Errno() = 2;
+    Return(c, 0xffffffffu);
+}
+C(_wspawnv) {
+    Log("_wspawnv(%s): not supported", WideToUtf8(Arg(c, 1)).c_str());
+    Errno() = 2;
+    Return(c, 0xffffffffu);
+}
+// ---- wide strings (UTF-16 in guest memory) ----
+C(wcschr) {
+    uint32_t s = Arg(c, 0);
+    uint16_t ch = uint16_t(Arg(c, 1));
+    for (;; s += 2) {
+        uint16_t v = R16(s);
+        if (v == ch) { Return(c, s); return; }
+        if (!v) { Return(c, 0); return; }
+    }
+}
+C(wcsrchr) {
+    uint32_t s = Arg(c, 0), last = 0;
+    uint16_t ch = uint16_t(Arg(c, 1));
+    for (;; s += 2) {
+        uint16_t v = R16(s);
+        if (v == ch) last = s;
+        if (!v) break;
+    }
+    Return(c, last);
+}
+C(wcscspn) {
+    uint32_t s = Arg(c, 0), set = Arg(c, 1), n = 0, m = WLen(set);
+    for (;; ++n) {
+        uint16_t v = R16(s + 2 * n);
+        if (!v) break;
+        bool hit = false;
+        for (uint32_t k = 0; k < m && !hit; ++k) hit = R16(set + 2 * k) == v;
+        if (hit) break;
+    }
+    Return(c, n);
+}
+C(wcsncpy) {
+    uint32_t d = Arg(c, 0), s = Arg(c, 1), n = Arg(c, 2), i = 0;
+    for (; i < n && R16(s + 2 * i); ++i) W16(d + 2 * i, R16(s + 2 * i));
+    for (; i < n; ++i) W16(d + 2 * i, 0);
+    Return(c, d);
+}
+C(wcsncat) {
+    uint32_t d = Arg(c, 0), s = Arg(c, 1), n = Arg(c, 2), e = d + 2 * WLen(d), i = 0;
+    for (; i < n && R16(s + 2 * i); ++i) W16(e + 2 * i, R16(s + 2 * i));
+    W16(e + 2 * i, 0);
+    Return(c, d);
+}
+int WCompare(uint32_t a, uint32_t b, uint32_t n, bool icase) {
+    for (uint32_t i = 0; i < n; ++i) {
+        uint32_t x = R16(a + 2 * i), y = R16(b + 2 * i);
+        if (icase) x = towlower(x), y = towlower(y);
+        if (x != y) return x < y ? -1 : 1;
+        if (!x) return 0;
+    }
+    return 0;
+}
+C(wcsncmp) { Return(c, uint32_t(WCompare(Arg(c, 0), Arg(c, 1), Arg(c, 2), false))); }
+C(_wcsicmp) { Return(c, uint32_t(WCompare(Arg(c, 0), Arg(c, 1), 0xffffffffu, true))); }
+C(_wcsnicmp) { Return(c, uint32_t(WCompare(Arg(c, 0), Arg(c, 1), Arg(c, 2), true))); }
+C(_wcslwr) {
+    for (uint32_t s = Arg(c, 0); R16(s); s += 2) W16(s, uint16_t(towlower(R16(s))));
+    Return(c, Arg(c, 0));
+}
+C(iswctype) {
+    uint32_t ch = Arg(c, 0) & 0xffff, mask = Arg(c, 1) & 0xffff;
+    uint32_t r = 0;
+    if ((mask & 0x1) && iswupper(ch)) r |= 0x1;      // _UPPER
+    if ((mask & 0x2) && iswlower(ch)) r |= 0x2;      // _LOWER
+    if ((mask & 0x4) && iswdigit(ch)) r |= 0x4;      // _DIGIT
+    if ((mask & 0x8) && iswspace(ch)) r |= 0x8;      // _SPACE
+    if ((mask & 0x10) && iswpunct(ch)) r |= 0x10;    // _PUNCT
+    if ((mask & 0x20) && iswcntrl(ch)) r |= 0x20;    // _CONTROL
+    if ((mask & 0x40) && ch == ' ') r |= 0x40;       // _BLANK
+    if ((mask & 0x80) && iswxdigit(ch)) r |= 0x80;   // _HEX
+    if ((mask & 0x100) && iswalpha(ch)) r |= 0x100;  // _ALPHA
+    Return(c, r);
+}
+long WideToLong(Ctx* c, int base_arg, bool is_unsigned, uint32_t* end_out) {
+    std::string s = WideToUtf8(Arg(c, 0));
+    char* end;
+    long v = is_unsigned ? long(strtoul(s.c_str(), &end, base_arg >= 0 ? int(Arg(c, base_arg)) : 10))
+                         : strtol(s.c_str(), &end, base_arg >= 0 ? int(Arg(c, base_arg)) : 10);
+    // The prefix consumed is ASCII here, so the byte count is the UTF-16 unit count.
+    if (end_out) *end_out = Arg(c, 0) + 2 * uint32_t(end - s.c_str());
+    return v;
+}
+C(wcstol) {
+    uint32_t end;
+    long v = WideToLong(c, 2, false, &end);
+    if (Arg(c, 1)) W32(Arg(c, 1), end);
+    Return(c, uint32_t(int32_t(v < INT32_MIN ? INT32_MIN : v > INT32_MAX ? INT32_MAX : v)));
+}
+C(wcstoul) {
+    uint32_t end;
+    long v = WideToLong(c, 2, true, &end);
+    if (Arg(c, 1)) W32(Arg(c, 1), end);
+    Return(c, uint32_t(v));
+}
+C(_wtol) { Return(c, uint32_t(int32_t(WideToLong(c, -1, false, nullptr)))); }
+C(wcstod) {
+    std::string s = WideToUtf8(Arg(c, 0));
+    char* end;
+    double v = strtod(s.c_str(), &end);
+    if (Arg(c, 1)) W32(Arg(c, 1), Arg(c, 0) + 2 * uint32_t(end - s.c_str()));
+    ReturnF(c, v);
+}
+// C++ exceptions: not supported yet (see _CxxThrowException); a frame handler only sees SEH unwinds.
+C(__CxxFrameHandler3) { Return(c, 1); }  // ExceptionContinueSearch
+C(_except_handler3) { Return(c, 1); }
+
 #undef C
 
 #define E(name) {"msvcr90.dll", #name, m_##name}
 const ImportDef kMsvcr80[] = {
+    E(__set_app_type), E(__setusermatherr), E(_configthreadlocale), E(_invoke_watson), E(_XcptFilter), E(_cexit), E(__p__fmode), E(__p__commode), E(__getmainargs), E(_ismbblead), E(_setmbcp), E(setlocale), E(signal), E(_getch), E(getenv), E(tmpfile), E(_getdrive), E(_control87), E(_controlfp), E(strcmp), E(isprint), E(atol), E(vsprintf), E(vfprintf), E(printf), E(_ltoa), E(_ultoa), E(_ltow), E(_ultow), E(_finite), E(_CIsin), E(_CIlog), E(_ecvt), E(_fcvt), E(_aligned_malloc), E(_aligned_free), E(_aligned_realloc), E(_beginthreadex), E(_time64), E(_time32), E(_mktime64), E(strftime), E(_stat64i32), E(_wstat64i32), E(_wgetcwd), E(_wgetdcwd), E(_searchenv), E(_wsearchenv), E(_spawnv), E(_wspawnv), E(wcschr), E(wcsrchr), E(wcscspn), E(wcsncpy), E(wcsncat), E(wcsncmp), E(_wcsicmp), E(_wcsnicmp), E(_wcslwr), E(iswctype), E(wcstol), E(wcstoul), E(_wtol), E(wcstod), E(__CxxFrameHandler3), E(_except_handler3),
     E(memset), E(memcpy), E(memmove), E(memmove_s), E(memcpy_s), E(memchr), E(strchr), E(strrchr), E(strstr),
     E(strpbrk), E(strspn), E(strcspn), E(strncmp), E(strcoll), E(_stricmp), E(_strnicmp), E(strncpy), E(strncat),
     E(strnlen), E(strcpy_s), E(strcat_s), E(strncpy_s), E(strtok), E(_strupr), E(_strlwr), E(strerror),

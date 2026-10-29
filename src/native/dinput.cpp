@@ -432,4 +432,10 @@ bool CreateDirectInput8(uint32_t clsid, uint32_t out, uint32_t* hr) {
     return true;
 }
 
+// dinput8.dll!DirectInput8Create(hinst, version, riid, ppv, outer): the IDirectInput8 that CoCreateInstance gives.
+uint32_t NewDirectInput8() {
+    Init();
+    return NewGuest(g_vtable_di, nullptr);
+}
+
 }  // namespace native

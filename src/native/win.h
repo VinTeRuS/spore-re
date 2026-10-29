@@ -67,6 +67,11 @@ void FiberDelete(uint32_t handle);
 void FiberConvertToThread();
 uint32_t TebTlsSlot(int index);
 
+// ---- UTF-16 strings (kernel32.cpp) ----
+std::string WideToUtf8(uint32_t a, int32_t n = -1);  // guest UTF-16 (n units, or up to the terminator) -> UTF-8
+uint32_t PutWideString(uint32_t buf, uint32_t cap, const std::string& s);  // UTF-8 -> guest buffer of cap units
+void BeginThreadEx(Ctx* c);
+extern const char* const kGuestExeDir;  // "C:\\Game\\SporebinEP1"
 // ---- loaded modules ----
 extern LoadedImage g_engine;
 

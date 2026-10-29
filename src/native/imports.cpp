@@ -117,8 +117,13 @@ uint32_t ImportThunk(const char* dll, const char* name) {
     if (strcmp(name, "_HUGE") == 0) {
         WF64(addr, HUGE_VAL);
     }
+    if (strcmp(name, "_acmdln") == 0) {  // char* _acmdln: the command line the CRT parses
+        W32(addr, GuestStrdup("\"C:\\Game\\SporebinEP1\\SporeApp.exe\""));
+    }
     return addr;
 }
+
+bool HasImport(const char* dll, const char* name) { return Handlers().count(Key(dll, name)) != 0; }
 
 bool DispatchImport(Ctx* ctx, uint32_t target) {
     if (!g_thunk_base || target < g_thunk_base || target >= g_thunk_base + kThunkSize) return false;
@@ -132,6 +137,9 @@ bool DispatchImport(Ctx* ctx, uint32_t target) {
         Fatal("unimplemented import %s!%s (called from %08x, args %08x %08x %08x %08x)", s.dll.c_str(),
               s.name.c_str(), R32(ctx->esp), Arg(ctx, 0), Arg(ctx, 1), Arg(ctx, 2), Arg(ctx, 3));
     }
+    // SPORERE_TRACE_IMPORTS=1: every import call with its caller, for following startup paths.
+    static const bool trace = getenv("SPORERE_TRACE_IMPORTS") != nullptr;
+    if (trace) Log("import %s!%s from %08x", s.dll.c_str(), s.name.c_str(), R32(ctx->esp));
     if (ImportProfiling() && s.name != "SwitchToFiber") {  // a fiber switch does not return until switched back
         ProfiledCall(s, index, ctx);
     } else {

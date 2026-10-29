@@ -13,6 +13,11 @@
 #include <chrono>
 #include <cstring>
 #include <ctime>
+#include <cwctype>
+#include <functional>
+#include <map>
+#include <mutex>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -274,6 +279,7 @@ struct Find : KObject {
     size_t next = 0;
 };
 
+constexpr uint32_t ERROR_NOT_SUPPORTED = 50, ERROR_ENVVAR_NOT_FOUND = 203, ERROR_RESOURCE_TYPE_NOT_FOUND = 1813;
 constexpr uint32_t ERROR_FILE_NOT_FOUND = 2, ERROR_PATH_NOT_FOUND = 3, ERROR_ACCESS_DENIED = 5,
                    ERROR_INVALID_HANDLE = 6, ERROR_NO_MORE_FILES = 18, ERROR_ALREADY_EXISTS = 183,
                    ERROR_FILE_EXISTS = 80;
@@ -503,7 +509,8 @@ K(GetProcAddress) {
             std::lock_guard<std::mutex> lock(g_modules_mutex);
             dll = g_module_names[(module - kModuleBase) / 0x10000];
         }
-        r = ImportThunk(dll.c_str(), proc.c_str());
+        r = HasImport(dll.c_str(), proc.c_str()) ? ImportThunk(dll.c_str(), proc.c_str()) : 0;
+        if (!r) Log("GetProcAddress(%s, %s): not provided", dll.c_str(), proc.c_str());
     }
     Return(c, r, 2);
 }
@@ -787,8 +794,7 @@ K(WaitForSingleObject) {
     if (ok) o->Acquire(tid);
     Return(c, ok ? 0 : 0x102, 2);  // WAIT_OBJECT_0 / WAIT_TIMEOUT
 }
-K(WaitForMultipleObjects) {
-    uint32_t n = Arg(c, 0), handles = Arg(c, 1), all = Arg(c, 2), ms = Arg(c, 3);
+uint32_t WaitMultiple(uint32_t n, uint32_t handles, bool all, uint32_t ms) {
     std::vector<KObject*> objs;
     for (uint32_t i = 0; i < n; ++i) objs.push_back(HandleObject(R32(handles + 4 * i)));
     uint32_t tid = CurrentTid();
@@ -811,8 +817,40 @@ K(WaitForMultipleObjects) {
         }
         return false;
     });
-    Return(c, which, 4);
+    return which;
 }
+K(WaitForMultipleObjects) { Return(c, WaitMultiple(Arg(c, 0), Arg(c, 1), Arg(c, 2) != 0, Arg(c, 3)), 4); }
+
+// ---- APCs (QueueUserAPC): run by the target thread in its next alertable wait (SleepEx, WaitFor*Ex), which
+// waits in short slices so that a newly queued APC is noticed ----
+std::map<uint32_t, std::vector<std::pair<uint32_t, uint32_t>>> g_apcs;  // guest thread id -> (fn, data); g_kernel_mutex
+bool RunApcs() {
+    std::vector<std::pair<uint32_t, uint32_t>> todo;
+    {
+        std::lock_guard<std::mutex> lock(g_kernel_mutex);
+        auto it = g_apcs.find(CurrentTid());
+        if (it == g_apcs.end() || it->second.empty()) return false;
+        todo.swap(it->second);
+    }
+    for (auto& [fn, data] : todo) GuestCall(fn, {data});
+    return true;
+}
+constexpr uint32_t kWaitIoCompletion = 0xc0;
+uint32_t AlertableWait(uint32_t ms, const std::function<uint32_t(uint32_t)>& wait_slice) {
+    auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    for (;;) {
+        if (RunApcs()) return kWaitIoCompletion;
+        uint32_t slice = 10;
+        if (ms != 0xffffffffu) {
+            auto left = std::chrono::duration_cast<std::chrono::milliseconds>(end - std::chrono::steady_clock::now());
+            if (left.count() <= 0) slice = 0;
+            else if (left.count() < 10) slice = uint32_t(left.count());
+        }
+        uint32_t r = wait_slice(slice);
+        if (r != 0x102 || (ms != 0xffffffffu && std::chrono::steady_clock::now() >= end)) return r;
+    }
+}
+
 K(CloseHandle) {
     CloseKernelHandle(Arg(c, 0));
     Return(c, 1, 1);
@@ -847,7 +885,7 @@ K(CreateFileA) {
         mkdir(dir.c_str(), 0755);
     }
     int fd = open(host.c_str(), flags | O_CLOEXEC, 0644);
-    static const bool trace = getenv("PROTORE_TRACE_FILES") != nullptr;
+    static const bool trace = getenv("SPORERE_TRACE_FILES") != nullptr;
     if (trace) Log("CreateFileA(%s, %x, disp %u) -> %s", name, access, disposition, fd < 0 ? strerror(errno) : "ok");
     if (fd < 0) {
         SetLastError(ErrnoToWin(errno));
@@ -1138,10 +1176,538 @@ K(GetLocaleInfoA) {
     Return(c, n, 4);
 }
 
-#undef K
 
 #define E(name) {"kernel32.dll", #name, k_##name}
+
+// ---- SporeApp.exe: the wide (UTF-16) variants and the rest of what its CRT and engine import ----
+// Wide strings are converted to UTF-8 (the host's file names) and handed to the ANSI implementations above, which
+// treat them as opaque bytes; results go back as UTF-16.
+std::string Wide(uint32_t a, int32_t n = -1) {
+    std::string out;
+    if (!a) return out;
+    for (int32_t i = 0; n < 0 || i < n; ++i) {
+        uint32_t ch = R16(a + 2 * uint32_t(i));
+        if (n < 0 && !ch) break;
+        if (ch >= 0xd800 && ch < 0xdc00 && (n < 0 || i + 1 < n)) {
+            uint32_t lo = R16(a + 2 * uint32_t(i + 1));
+            if (lo >= 0xdc00 && lo < 0xe000) {
+                ch = 0x10000 + ((ch - 0xd800) << 10) + (lo - 0xdc00);
+                ++i;
+            }
+        }
+        if (ch < 0x80) {
+            out += char(ch);
+        } else if (ch < 0x800) {
+            out += char(0xc0 | ch >> 6);
+            out += char(0x80 | (ch & 0x3f));
+        } else if (ch < 0x10000) {
+            out += char(0xe0 | ch >> 12);
+            out += char(0x80 | ((ch >> 6) & 0x3f));
+            out += char(0x80 | (ch & 0x3f));
+        } else {
+            out += char(0xf0 | ch >> 18);
+            out += char(0x80 | ((ch >> 12) & 0x3f));
+            out += char(0x80 | ((ch >> 6) & 0x3f));
+            out += char(0x80 | (ch & 0x3f));
+        }
+    }
+    return out;
+}
+std::u16string ToUtf16(const std::string& s) {
+    std::u16string out;
+    for (size_t i = 0; i < s.size();) {
+        uint32_t cp = uint8_t(s[i++]);
+        int extra = cp >= 0xf0 ? 3 : cp >= 0xe0 ? 2 : cp >= 0xc0 ? 1 : 0;
+        cp &= extra == 3 ? 0x07 : extra == 2 ? 0x0f : extra == 1 ? 0x1f : 0x7f;
+        for (; extra && i < s.size(); --extra) cp = cp << 6 | (uint8_t(s[i++]) & 0x3f);
+        if (cp >= 0x10000) {
+            cp -= 0x10000;
+            out += char16_t(0xd800 + (cp >> 10));
+            out += char16_t(0xdc00 + (cp & 0x3ff));
+        } else {
+            out += char16_t(cp);
+        }
+    }
+    return out;
+}
+// Writes s (with its terminator) into a guest buffer of `cap` UTF-16 units; returns the length without the
+// terminator, or the size needed (with it) when it does not fit.
+uint32_t PutWide(uint32_t buf, uint32_t cap, const std::string& s, bool* fits = nullptr) {
+    std::u16string w = ToUtf16(s);
+    bool ok = buf && cap > w.size();
+    if (fits) *fits = ok;
+    if (!ok) return uint32_t(w.size() + 1);
+    for (size_t i = 0; i < w.size(); ++i) W16(buf + 2 * uint32_t(i), uint16_t(w[i]));
+    W16(buf + 2 * uint32_t(w.size()), 0);
+    return uint32_t(w.size());
+}
+
+// Calls an ANSI handler with the wide string arguments at `which` replaced by UTF-8 copies; `extra` dwords of the
+// wide variant's arguments that the ANSI one does not have are popped afterwards.
+void CallAnsi(Ctx* c, void (*ansi)(Ctx*), std::initializer_list<int> which, int extra = 0) {
+    std::vector<std::pair<int, uint32_t>> saved;
+    for (int i : which) {
+        uint32_t w = Arg(c, i);
+        if (!w) continue;
+        uint32_t a = GuestStrdup(Wide(w).c_str());
+        saved.push_back({i, w});
+        W32(c->esp + 4 + 4 * uint32_t(i), a);
+    }
+    std::vector<uint32_t> temps;
+    for (auto& [i, w] : saved) temps.push_back(Arg(c, i));
+    uint32_t esp = c->esp;
+    ansi(c);
+    // The arguments are still in place below the popped return address: restore them for the caller's view.
+    for (size_t k = 0; k < saved.size(); ++k) {
+        W32(esp + 4 + 4 * uint32_t(saved[k].first), saved[k].second);
+        HeapFree(temps[k]);
+    }
+    c->esp += 4 * uint32_t(extra);
+}
+
+K(GetStartupInfoA) {
+    uint32_t si = Arg(c, 0);
+    memset(Ptr<void>(si), 0, 68);
+    W32(si, 68);
+    Return(c, 0, 1);
+}
+K(GetCommandLineA) {
+    static uint32_t line = GuestStrdup("\"C:\\Game\\SporebinEP1\\SporeApp.exe\"");
+    Return(c, line);
+}
+K(GetStdHandle) { Return(c, 0x00000f00u - Arg(c, 0), 1); }  // -10/-11/-12 -> distinct fake handles
+K(GetFileType) {
+    uint32_t h = Arg(c, 0);
+    Return(c, (h >= 0xf0a && h <= 0xf0c) ? 2u : 1u, 1);  // FILE_TYPE_CHAR for the std handles, DISK otherwise
+}
+K(FlushConsoleInputBuffer) { Return(c, 1, 1); }
+K(GetVersion) { Return(c, 7601u << 16 | 1u << 8 | 6u); }  // Windows 7 SP1
+K(GetVersionExW) {
+    uint32_t v = Arg(c, 0), size = R32(v);
+    memset(Ptr<uint8_t>(v) + 4, 0, size > 4 ? size - 4 : 0);
+    W32(v + 4, 6);
+    W32(v + 8, 1);
+    W32(v + 12, 7601);
+    W32(v + 16, 2);  // VER_PLATFORM_WIN32_NT
+    PutWide(v + 20, 128, "Service Pack 1");
+    if (size >= 284) W16(v + 276, 1);
+    Return(c, 1, 1);
+}
+K(SetLastError) {
+    SetLastError(Arg(c, 0));
+    Return(c, 0, 1);
+}
+K(InterlockedIncrement) { Return(c, __atomic_add_fetch(Ptr<uint32_t>(Arg(c, 0)), 1u, __ATOMIC_SEQ_CST), 1); }
+K(InterlockedExchangeAdd) {
+    Return(c, __atomic_fetch_add(Ptr<uint32_t>(Arg(c, 0)), Arg(c, 1), __ATOMIC_SEQ_CST), 2);
+}
+uint32_t ZeroedAlloc(uint32_t size, bool zero) {
+    uint32_t p = HeapAlloc(size ? size : 1);
+    if (p && zero) memset(Ptr<void>(p), 0, size);
+    return p;
+}
+K(HeapAlloc) { Return(c, ZeroedAlloc(Arg(c, 2), Arg(c, 1) & 0x8u), 3); }  // HEAP_ZERO_MEMORY
+K(LocalAlloc) { Return(c, ZeroedAlloc(Arg(c, 1), Arg(c, 0) & 0x40u), 2); }  // LMEM_ZEROINIT
+K(LocalFree) {
+    if (Arg(c, 0)) HeapFree(Arg(c, 0));
+    Return(c, 0, 1);
+}
+K(GlobalAlloc) { Return(c, ZeroedAlloc(Arg(c, 1), Arg(c, 0) & 0x40u), 2); }  // GMEM_ZEROINIT; never moveable
+K(GlobalLock) { Return(c, Arg(c, 0), 1); }
+K(GlobalUnlock) { Return(c, 1, 1); }
+K(GlobalFree) {
+    if (Arg(c, 0)) HeapFree(Arg(c, 0));
+    Return(c, 0, 1);
+}
+K(GlobalSize) { Return(c, Arg(c, 0) ? HeapSize(Arg(c, 0)) : 0, 1); }
+K(GlobalMemoryStatusEx) {
+    uint32_t m = Arg(c, 0);
+    uint64_t phys = uint64_t(sysconf(_SC_PHYS_PAGES)) * uint64_t(sysconf(_SC_PAGESIZE));
+    uint64_t avail = uint64_t(sysconf(_SC_AVPHYS_PAGES)) * uint64_t(sysconf(_SC_PAGESIZE));
+    W32(m + 4, phys ? uint32_t(100 - avail * 100 / phys) : 0);
+    auto w64 = [&](uint32_t off, uint64_t v) { W32(m + off, uint32_t(v)); W32(m + off + 4, uint32_t(v >> 32)); };
+    w64(8, phys);
+    w64(16, avail);
+    w64(24, phys);
+    w64(32, avail);
+    w64(40, 0x7ffe0000ull);  // 2 GiB user space: not large-address aware
+    w64(48, 0x60000000ull);
+    w64(56, 0);
+    Return(c, 1, 1);
+}
+K(GetSystemInfo) {
+    uint32_t si = Arg(c, 0);
+    memset(Ptr<void>(si), 0, 36);
+    unsigned n = std::thread::hardware_concurrency();
+    if (n == 0 || n > 32) n = n ? 32 : 4;
+    W32(si + 4, 4096);
+    W32(si + 8, 0x00010000u);
+    W32(si + 12, 0x7ffeffffu);
+    W32(si + 16, n == 32 ? 0xffffffffu : (1u << n) - 1);
+    W32(si + 20, n);
+    W32(si + 24, 586);  // PROCESSOR_INTEL_PENTIUM
+    W32(si + 28, 0x10000);
+    W16(si + 32, 6);
+    Return(c, 0, 1);
+}
+K(SetPriorityClass) { Return(c, 1, 2); }
+K(GetPriorityClass) { Return(c, 0x20, 1); }  // NORMAL_PRIORITY_CLASS
+K(GetThreadPriority) { Return(c, 0, 1); }
+K(SetProcessAffinityMask) { Return(c, 1, 2); }
+K(SetThreadIdealProcessor) { Return(c, 0, 2); }
+K(SetThreadExecutionState) { Return(c, 0x80000000u, 1); }
+void PutComputerName(uint32_t buf, uint32_t size_ptr) {
+    const char* name = "SPORE";
+    uint32_t cap = R32(size_ptr);
+    if (cap > strlen(name)) strcpy(Str(buf), name);
+    W32(size_ptr, uint32_t(strlen(name)));
+}
+K(GetComputerNameA) {
+    PutComputerName(Arg(c, 0), Arg(c, 1));
+    Return(c, 1, 2);
+}
+K(GetComputerNameExA) {
+    PutComputerName(Arg(c, 1), Arg(c, 2));
+    Return(c, 1, 3);
+}
+K(OpenProcess) { Return(c, kCurrentProcess, 3); }  // the game only ever opens itself
+K(GetProcessTimes) {
+    uint64_t now = NowFileTime();
+    struct timespec ts;
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
+    uint64_t user = uint64_t(ts.tv_sec) * 10000000u + uint64_t(ts.tv_nsec) / 100u;
+    uint64_t vals[4] = {now, 0, 0, user};
+    for (int i = 0; i < 4; ++i) {
+        if (!Arg(c, 1 + i)) continue;
+        W32(Arg(c, 1 + i), uint32_t(vals[i]));
+        W32(Arg(c, 1 + i) + 4, uint32_t(vals[i] >> 32));
+    }
+    Return(c, 1, 5);
+}
+K(DuplicateHandle) {
+    // Pseudo handles (GetCurrentThread/Process) stay what they are; real ones are shared, not copied.
+    uint32_t src = Arg(c, 1), dst = Arg(c, 3);
+    if (KObject* o = HandleObject(src)) {
+        std::lock_guard<std::mutex> lock(g_kernel_mutex);
+        ++o->refs;
+    }
+    if (dst) W32(dst, src);
+    Return(c, 1, 7);
+}
+K(SleepEx) {
+    uint32_t ms = Arg(c, 0);
+    if (!Arg(c, 1)) {
+        CallAnsi(c, k_Sleep, {}, 1);
+        c->eax = 0;
+        return;
+    }
+    uint32_t r = AlertableWait(ms, [](uint32_t slice) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(slice ? slice : 1));
+        return 0x102u;
+    });
+    Return(c, r == kWaitIoCompletion ? r : 0, 2);
+}
+K(QueueUserAPC) {
+    uint32_t fn = Arg(c, 0), h = Arg(c, 1), data = Arg(c, 2);
+    uint32_t tid = 0;
+    if (h == kCurrentThread) tid = CurrentTid();
+    else if (KObject* o = HandleObject(h); o && o->type == KType::Thread) tid = static_cast<Thread*>(o)->id;
+    if (!tid) {
+        Return(c, 0, 3);
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_kernel_mutex);
+    g_apcs[tid].push_back({fn, data});
+    Return(c, 1, 3);
+}
+K(WaitForMultipleObjectsEx) {
+    uint32_t n = Arg(c, 0), handles = Arg(c, 1), ms = Arg(c, 3);
+    bool all = Arg(c, 2) != 0;
+    if (!Arg(c, 4)) {
+        Return(c, WaitMultiple(n, handles, all, ms), 5);
+        return;
+    }
+    Return(c, AlertableWait(ms, [&](uint32_t slice) { return WaitMultiple(n, handles, all, slice); }), 5);
+}
+K(ReleaseMutex) {
+    KObject* o = HandleObject(Arg(c, 0));
+    if (!o || o->type != KType::Mutex) {
+        Return(c, 0, 1);
+        return;
+    }
+    auto* m = static_cast<Mutex*>(o);
+    std::lock_guard<std::mutex> lock(g_kernel_mutex);
+    if (m->owner != CurrentTid()) {
+        Return(c, 0, 1);
+        return;
+    }
+    if (--m->recursion == 0) {
+        m->owner = 0;
+        m->Notify();
+        g_kernel_cv.notify_all();
+    }
+    Return(c, 1, 1);
+}
+K(InitializeCriticalSectionAndSpinCount) {
+    CallAnsi(c, k_InitializeCriticalSection, {}, 1);
+    c->eax = 1;
+}
+K(VirtualQuery) {
+    uint32_t addr = Arg(c, 0), mbi = Arg(c, 1);
+    uint32_t page = addr & ~0xfffu;
+    GuestThread* t = CurrentThread();
+    uint32_t alloc = page, region = 0x1000, protect = 0x04;  // PAGE_READWRITE
+    if (t && addr >= t->stack_lo && addr < t->stack_hi) {
+        alloc = t->stack_lo;  // the CRT and engines find their stack size from AllocationBase
+        region = t->stack_hi - page;
+    } else if (addr >= g_engine.base && addr < g_engine.base + g_engine.size) {
+        alloc = g_engine.base;
+        protect = 0x20;  // PAGE_EXECUTE_READ
+        region = g_engine.base + g_engine.size - page;
+    }
+    W32(mbi, page);
+    W32(mbi + 4, alloc);
+    W32(mbi + 8, protect);
+    W32(mbi + 12, region);
+    W32(mbi + 16, 0x1000);  // MEM_COMMIT
+    W32(mbi + 20, protect);
+    W32(mbi + 24, alloc == g_engine.base ? 0x1000000u : 0x20000u);  // MEM_IMAGE / MEM_PRIVATE
+    Return(c, 28, 3);
+}
+K(GetSystemTime) {
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    struct tm t;
+    gmtime_r(&tv.tv_sec, &t);
+    WriteSystemTime(Arg(c, 0), t, int(tv.tv_usec / 1000));
+    Return(c, 0, 1);
+}
+K(SystemTimeToFileTime) {
+    uint32_t st = Arg(c, 0);
+    struct tm t {};
+    t.tm_year = int(R16(st)) - 1900;
+    t.tm_mon = int(R16(st + 2)) - 1;
+    t.tm_mday = int(R16(st + 6));
+    t.tm_hour = int(R16(st + 8));
+    t.tm_min = int(R16(st + 10));
+    t.tm_sec = int(R16(st + 12));
+    int64_t secs = int64_t(timegm(&t));
+    uint64_t ft = uint64_t(secs + 11644473600ll) * 10000000u + uint64_t(R16(st + 14)) * 10000u;
+    W32(Arg(c, 1), uint32_t(ft));
+    W32(Arg(c, 1) + 4, uint32_t(ft >> 32));
+    Return(c, 1, 2);
+}
+K(GetSystemDefaultLCID) { Return(c, 1033); }
+K(GetLocaleInfoW) {
+    uint32_t buf = Arg(c, 2), size = Arg(c, 3);
+    uint32_t tmp = HeapAlloc(256);
+    uint32_t orig = buf;
+    W32(c->esp + 12, tmp);
+    W32(c->esp + 16, 256);
+    uint32_t esp = c->esp;
+    k_GetLocaleInfoA(c);
+    W32(esp + 12, orig);
+    W32(esp + 16, size);
+    uint32_t n = c->eax;
+    if (n) {
+        std::string v(Str(tmp));
+        bool fits;
+        uint32_t r = PutWide(buf, size, v, &fits);
+        c->eax = size == 0 ? r : fits ? r + 1 : 0;
+    }
+    HeapFree(tmp);
+}
+K(CompareStringW) {
+    uint32_t flags = Arg(c, 1);
+    int32_t n1 = int32_t(Arg(c, 3)), n2 = int32_t(Arg(c, 5));
+    std::u16string a = ToUtf16(Wide(Arg(c, 2), n1)), b = ToUtf16(Wide(Arg(c, 4), n2));
+    if (n1 < 0 && !a.empty() && a.back() == 0) a.pop_back();
+    if (n2 < 0 && !b.empty() && b.back() == 0) b.pop_back();
+    if (flags & 1) {  // NORM_IGNORECASE
+        for (auto& ch : a) ch = char16_t(towlower(ch));
+        for (auto& ch : b) ch = char16_t(towlower(ch));
+    }
+    int r = a.compare(b);
+    Return(c, r < 0 ? 1u : r == 0 ? 2u : 3u, 6);  // CSTR_LESS_THAN / EQUAL / GREATER_THAN
+}
+K(LCMapStringW) {
+    uint32_t flags = Arg(c, 1), src = Arg(c, 2), dst = Arg(c, 4), cap = Arg(c, 5);
+    int32_t n = int32_t(Arg(c, 3));
+    if (n < 0) {
+        n = 0;
+        while (R16(src + 2 * uint32_t(n))) ++n;
+        ++n;
+    }
+    if (cap == 0) {
+        Return(c, uint32_t(n), 6);
+        return;
+    }
+    int32_t m = n < int32_t(cap) ? n : int32_t(cap);
+    for (int32_t i = 0; i < m; ++i) {
+        uint16_t ch = R16(src + 2 * uint32_t(i));
+        if (flags & 0x100) ch = uint16_t(towlower(ch));  // LCMAP_LOWERCASE
+        if (flags & 0x200) ch = uint16_t(towupper(ch));  // LCMAP_UPPERCASE
+        W16(dst + 2 * uint32_t(i), ch);
+    }
+    Return(c, uint32_t(m), 6);
+}
+K(WideCharToMultiByte) {
+    uint32_t cp = Arg(c, 0), src = Arg(c, 2), out = Arg(c, 4), cap = Arg(c, 5);
+    int32_t n = int32_t(Arg(c, 3));
+    std::string s;
+    if (cp == 65001) {
+        s = Wide(src, n);
+        if (n < 0) s += '\0';
+    } else {  // CP_ACP: Latin-1, the subset MultiByteToWideChar maps back
+        for (int32_t i = 0;; ++i) {
+            if (n >= 0 && i >= n) break;
+            uint16_t ch = R16(src + 2 * uint32_t(i));
+            s += ch < 0x100 ? char(ch) : '?';
+            if (n < 0 && !ch) break;
+        }
+    }
+    if (cap == 0) {
+        Return(c, uint32_t(s.size()), 8);
+        return;
+    }
+    uint32_t m = uint32_t(s.size()) < cap ? uint32_t(s.size()) : cap;
+    memcpy(Str(out), s.data(), m);
+    Return(c, m, 8);
+}
+K(CreateFileW) { CallAnsi(c, k_CreateFileA, {0}); }
+K(GetFileAttributesW) { CallAnsi(c, k_GetFileAttributesA, {0}); }
+K(SetFileAttributesW) { CallAnsi(c, k_SetFileAttributesA, {0}); }
+K(DeleteFileW) { CallAnsi(c, k_DeleteFileA, {0}); }
+K(CreateDirectoryW) { CallAnsi(c, k_CreateDirectoryA, {0}); }
+K(RemoveDirectoryW) { CallAnsi(c, k_RemoveDirectoryA, {0}); }
+K(CopyFileW) { CallAnsi(c, k_CopyFileA, {0, 1}); }
+K(MoveFileExW) {
+    // MOVEFILE_REPLACE_EXISTING: rename() replaces anyway.
+    CallAnsi(c, k_MoveFileA, {0, 1}, 1);
+}
+K(LoadLibraryW) { CallAnsi(c, k_LoadLibraryA, {0}); }
+K(GetModuleHandleW) { CallAnsi(c, k_GetModuleHandleA, {0}); }
+K(GetModuleFileNameW) {
+    std::string p = std::string(kGuestExeDir) + "\\SporeApp.exe";
+    uint32_t buf = Arg(c, 1), size = Arg(c, 2);
+    bool fits;
+    uint32_t n = PutWide(buf, size, p, &fits);
+    Return(c, fits ? n : size, 3);
+}
+// WIN32_FIND_DATAA (320 bytes) -> WIN32_FIND_DATAW (592): the header is the same, the names widen.
+void WidenFindData(uint32_t a, uint32_t w) {
+    memcpy(Ptr<void>(w), Ptr<void>(a), 44);
+    PutWide(w + 44, 260, Str(a + 44));
+    PutWide(w + 564, 14, Str(a + 304));
+}
+K(FindFirstFileW) {
+    uint32_t out = Arg(c, 1), tmp = HeapAlloc(320);
+    W32(c->esp + 8, tmp);
+    uint32_t esp = c->esp;
+    CallAnsi(c, k_FindFirstFileA, {0});
+    W32(esp + 8, out);
+    if (c->eax != kInvalidHandle) WidenFindData(tmp, out);
+    HeapFree(tmp);
+}
+K(FindNextFileW) {
+    uint32_t out = Arg(c, 1), tmp = HeapAlloc(320);
+    W32(c->esp + 8, tmp);
+    uint32_t esp = c->esp;
+    k_FindNextFileA(c);
+    W32(esp + 8, out);
+    if (c->eax) WidenFindData(tmp, out);
+    HeapFree(tmp);
+}
+K(GetFullPathNameW) {
+    std::string full = FullGuestPath(Wide(Arg(c, 0)).c_str());
+    uint32_t size = Arg(c, 1), buf = Arg(c, 2), part = Arg(c, 3);
+    bool fits;
+    uint32_t n = PutWide(buf, size, full, &fits);
+    if (fits && part) {
+        std::u16string w = ToUtf16(full.substr(0, full.find_last_of('\\') + 1));
+        W32(part, buf + 2 * uint32_t(w.size()));
+    }
+    Return(c, n, 4);
+}
+K(GetLongPathNameW) {
+    std::string p = Wide(Arg(c, 0));
+    bool fits;
+    uint32_t n = PutWide(Arg(c, 1), Arg(c, 2), p, &fits);
+    Return(c, n, 3);
+}
+K(GetVolumePathNameW) {
+    bool fits;
+    PutWide(Arg(c, 1), Arg(c, 2), "C:\\", &fits);
+    Return(c, fits ? 1 : 0, 3);
+}
+K(GetSystemDirectoryW) { Return(c, PutWide(Arg(c, 0), Arg(c, 1), "C:\\Windows\\System32"), 2); }
+K(GetWindowsDirectoryW) { Return(c, PutWide(Arg(c, 0), Arg(c, 1), "C:\\Windows"), 2); }
+K(GetTempPathW) {
+    mkdir(HostPath("C:\\Temp").c_str(), 0755);
+    Return(c, PutWide(Arg(c, 1), Arg(c, 0), "C:\\Temp\\"), 2);
+}
+K(GetVolumeInformationW) {
+    uint32_t name = Arg(c, 1), name_size = Arg(c, 2), fs = Arg(c, 6), fs_size = Arg(c, 7);
+    uint32_t tname = name ? HeapAlloc(256) : 0, tfs = fs ? HeapAlloc(256) : 0;
+    W32(c->esp + 8, tname);
+    W32(c->esp + 12, tname ? 256 : 0);
+    W32(c->esp + 28, tfs);
+    W32(c->esp + 32, tfs ? 256 : 0);
+    uint32_t esp = c->esp;
+    CallAnsi(c, k_GetVolumeInformationA, {0});
+    W32(esp + 8, name);
+    W32(esp + 12, name_size);
+    W32(esp + 28, fs);
+    W32(esp + 32, fs_size);
+    if (c->eax) {
+        if (name) PutWide(name, name_size, Str(tname));
+        if (fs) PutWide(fs, fs_size, Str(tfs));
+    }
+    if (tname) HeapFree(tname);
+    if (tfs) HeapFree(tfs);
+}
+K(CancelIo) { Return(c, 1, 1); }
+// Directory change notifications: not available (the game then rescans on its own schedule).
+K(FindFirstChangeNotificationW) {
+    SetLastError(ERROR_NOT_SUPPORTED);
+    Return(c, kInvalidHandle, 3);
+}
+K(FindNextChangeNotification) { Return(c, 0, 1); }
+K(FindCloseChangeNotification) { Return(c, 1, 1); }
+K(EnumResourceNamesA) {
+    Log("EnumResourceNamesA(type %08x): no resources", Arg(c, 1));
+    SetLastError(ERROR_RESOURCE_TYPE_NOT_FOUND);
+    Return(c, 0, 4);
+}
+std::map<std::string, std::string> g_env;  // SetEnvironmentVariableA; under g_env_mutex
+std::mutex g_env_mutex;
+K(SetEnvironmentVariableA) {
+    std::lock_guard<std::mutex> lock(g_env_mutex);
+    if (Arg(c, 1)) g_env[Str(Arg(c, 0))] = Str(Arg(c, 1));
+    else g_env.erase(Str(Arg(c, 0)));
+    Return(c, 1, 2);
+}
+K(GetEnvironmentVariableA) {
+    std::lock_guard<std::mutex> lock(g_env_mutex);
+    auto it = g_env.find(Str(Arg(c, 0)));
+    if (it == g_env.end()) {
+        SetLastError(ERROR_ENVVAR_NOT_FOUND);
+        Return(c, 0, 3);
+        return;
+    }
+    uint32_t buf = Arg(c, 1), size = Arg(c, 2);
+    if (it->second.size() + 1 > size) {
+        Return(c, uint32_t(it->second.size() + 1), 3);
+        return;
+    }
+    strcpy(Str(buf), it->second.c_str());
+    Return(c, uint32_t(it->second.size()), 3);
+}
+
+#undef K
+
 const ImportDef kKernel32[] = {
+    E(GetStartupInfoA), E(GetCommandLineA), E(GetStdHandle), E(GetFileType), E(FlushConsoleInputBuffer), E(GetVersion), E(GetVersionExW), E(SetLastError), E(InterlockedIncrement), E(InterlockedExchangeAdd), E(HeapAlloc), E(LocalAlloc), E(LocalFree), E(GlobalAlloc), E(GlobalLock), E(GlobalUnlock), E(GlobalFree), E(GlobalSize), E(GlobalMemoryStatusEx), E(GetSystemInfo), E(SetPriorityClass), E(GetPriorityClass), E(GetThreadPriority), E(SetProcessAffinityMask), E(SetThreadIdealProcessor), E(SetThreadExecutionState), E(GetComputerNameA), E(GetComputerNameExA), E(OpenProcess), E(GetProcessTimes), E(DuplicateHandle), E(SleepEx), E(QueueUserAPC), E(WaitForMultipleObjectsEx), E(ReleaseMutex), E(InitializeCriticalSectionAndSpinCount), E(VirtualQuery), E(GetSystemTime), E(SystemTimeToFileTime), E(GetSystemDefaultLCID), E(GetLocaleInfoW), E(CompareStringW), E(LCMapStringW), E(WideCharToMultiByte), E(CreateFileW), E(GetFileAttributesW), E(SetFileAttributesW), E(DeleteFileW), E(CreateDirectoryW), E(RemoveDirectoryW), E(CopyFileW), E(MoveFileExW), E(LoadLibraryW), E(GetModuleHandleW), E(GetModuleFileNameW), E(FindFirstFileW), E(FindNextFileW), E(GetFullPathNameW), E(GetLongPathNameW), E(GetVolumePathNameW), E(GetSystemDirectoryW), E(GetWindowsDirectoryW), E(GetTempPathW), E(GetVolumeInformationW), E(CancelIo), E(FindFirstChangeNotificationW), E(FindNextChangeNotification), E(FindCloseChangeNotification), E(EnumResourceNamesA), E(SetEnvironmentVariableA), E(GetEnvironmentVariableA),
     E(GetCurrentProcessId), E(GetCurrentThreadId), E(GetCurrentProcess), E(GetCurrentThread), E(GetTickCount),
     E(QueryPerformanceCounter), E(QueryPerformanceFrequency), E(GetSystemTimeAsFileTime), E(GetLocalTime),
     E(GetTimeZoneInformation), E(InterlockedCompareExchange), E(InterlockedExchange), E(InterlockedDecrement),
@@ -1167,5 +1733,14 @@ const ImportDef kKernel32[] = {
 ImportRegistrar g_kernel32(kKernel32);
 
 }  // namespace
+
+// _beginthreadex (msvcrt.cpp): CreateThread's arguments in the same order, but cdecl (the caller pops them).
+void BeginThreadEx(Ctx* c) {
+    k_CreateThread(c);
+    c->esp -= 24;
+}
+// The _wstat-style helpers of the CRT use the same conversion as the wide kernel32 functions.
+std::string WideToUtf8(uint32_t a, int32_t n) { return Wide(a, n); }
+uint32_t PutWideString(uint32_t buf, uint32_t cap, const std::string& s) { return PutWide(buf, cap, s); }
 
 }  // namespace native

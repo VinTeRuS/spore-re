@@ -1,5 +1,5 @@
-// Port settings: protore.ini in the working directory (on Android: the app's external files directory, next to
-// game/), one `key = value` per line, `#` or `;` starts a comment. An environment variable PROTORE_<KEY> (upper
+// Port settings: sporere.ini in the working directory (on Android: the app's external files directory, next to
+// game/), one `key = value` per line, `#` or `;` starts a comment. An environment variable SPORERE_<KEY> (upper
 // case) overrides the file.
 #include <cctype>
 #include <cstdlib>
@@ -15,7 +15,7 @@ namespace {
 
 std::map<std::string, std::string> Load() {
     std::map<std::string, std::string> m;
-    FILE* f = fopen("protore.ini", "r");
+    FILE* f = fopen("sporere.ini", "r");
     if (!f) return m;
     char line[512];
     while (fgets(line, sizeof(line), f)) {
@@ -41,7 +41,7 @@ std::map<std::string, std::string> Load() {
 }  // namespace
 
 std::string Setting(const char* key, const char* def) {
-    std::string env = "PROTORE_";
+    std::string env = "SPORERE_";
     for (const char* k = key; *k; ++k) env += char(toupper((unsigned char)*k));
     if (const char* v = getenv(env.c_str())) return v;
     static std::once_flag once;

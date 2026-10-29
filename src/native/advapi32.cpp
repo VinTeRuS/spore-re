@@ -66,11 +66,11 @@ void Seed() {
     bp1["packid"] = dw(0x06f4b5d1u);
 }
 
-uint32_t Open(uint32_t parent, uint32_t sub, bool create) {
+uint32_t OpenPath(uint32_t parent, const std::string& sub, bool create) {
     Seed();
     std::string path = RootName(parent);
     if (path.empty()) return 0;
-    if (sub && *Str(sub)) path += "\\" + Lower(Str(sub));
+    if (!sub.empty()) path += "\\" + Lower(sub.c_str());
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_keys.count(path)) {
         if (!create) return 0;
@@ -81,6 +81,7 @@ uint32_t Open(uint32_t parent, uint32_t sub, bool create) {
     g_open[h] = path;
     return h;
 }
+uint32_t Open(uint32_t parent, uint32_t sub, bool create) { return OpenPath(parent, sub ? Str(sub) : "", create); }
 
 #define A(name) void a_##name(Ctx* c)
 
@@ -162,6 +163,72 @@ A(CryptImportKey) { Return(c, 0, 6); }
 A(CryptEncrypt) { Return(c, 0, 7); }
 A(CryptDestroyKey) { Return(c, 1, 1); }
 
+// Wide variants: names in UTF-16; string values are stored as UTF-8 and handed back as UTF-16.
+A(RegOpenKeyExW) {
+    uint32_t h = OpenPath(Arg(c, 0), WideToUtf8(Arg(c, 1)), false);
+    static const bool trace = SettingInt("trace_registry", 0) != 0;
+    if (trace) Log("RegOpenKeyExW(%s) -> %s", WideToUtf8(Arg(c, 1)).c_str(), h ? "ok" : "not found");
+    if (h) W32(Arg(c, 4), h);
+    Return(c, h ? 0 : 2, 5);
+}
+A(RegQueryValueExW) {
+    std::string path = RootName(Arg(c, 0));
+    std::string name = Lower(WideToUtf8(Arg(c, 1)).c_str());
+    uint32_t type_out = Arg(c, 3), data = Arg(c, 4), size_out = Arg(c, 5);
+    static const bool trace = SettingInt("trace_registry", 0) != 0;
+    if (trace) Log("RegQueryValueExW(%s\\%s)", path.c_str(), name.c_str());
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto k = g_keys.find(path);
+    if (k == g_keys.end() || !k->second.count(name)) {
+        Return(c, 2, 6);
+        return;
+    }
+    const Value& v = k->second[name];
+    std::string bytes = v.data;
+    if (v.type == 1 || v.type == 2) {  // REG_SZ / REG_EXPAND_SZ
+        std::string text = v.data.substr(0, v.data.find('\0'));
+        bytes.clear();
+        uint32_t tmp = HeapAlloc(uint32_t(text.size() + 1) * 4 + 4);
+        uint32_t n = PutWideString(tmp, uint32_t(text.size()) * 2 + 2, text);
+        bytes.assign(Ptr<char>(tmp), 2 * (n + 1));
+        HeapFree(tmp);
+    }
+    if (type_out) W32(type_out, v.type);
+    uint32_t need = uint32_t(bytes.size());
+    if (data) {
+        if (!size_out || R32(size_out) < need) {
+            if (size_out) W32(size_out, need);
+            Return(c, 234, 6);  // ERROR_MORE_DATA
+            return;
+        }
+        memcpy(Ptr<void>(data), bytes.data(), need);
+    }
+    if (size_out) W32(size_out, need);
+    Return(c, 0, 6);
+}
+A(RegEnumKeyExW) { Return(c, 259, 8); }  // ERROR_NO_MORE_ITEMS
+void PutUserName(uint32_t buf, uint32_t size_ptr, bool wide) {
+    const char* name = "Player";
+    uint32_t cap = R32(size_ptr), need = uint32_t(strlen(name)) + 1;
+    if (cap >= need) {
+        if (wide) PutWideString(buf, cap, name);
+        else strcpy(Str(buf), name);
+    }
+    W32(size_ptr, need);
+}
+A(GetUserNameA) {
+    PutUserName(Arg(c, 0), Arg(c, 1), false);
+    Return(c, 1, 2);
+}
+A(GetUserNameW) {
+    PutUserName(Arg(c, 0), Arg(c, 1), true);
+    Return(c, 1, 2);
+}
+// Event log: accepted and dropped (the game reports crashes there).
+A(RegisterEventSourceA) { Return(c, 0x4000u, 2); }
+A(ReportEventA) { Return(c, 1, 9); }
+A(DeregisterEventSource) { Return(c, 1, 1); }
+
 #undef A
 
 #define E(name) {"advapi32.dll", #name, a_##name}
@@ -169,7 +236,8 @@ const ImportDef kAdvapi32[] = {
     E(RegOpenKeyExA), E(RegOpenKeyA), E(RegCreateKeyExA), E(RegCloseKey), E(RegQueryValueExA), E(RegSetValueExA),
     E(RegEnumKeyA), E(CryptAcquireContextA), E(CryptReleaseContext), E(CryptGenRandom), E(CryptCreateHash),
     E(CryptHashData), E(CryptGetHashParam), E(CryptDestroyHash), E(CryptImportKey), E(CryptEncrypt),
-    E(CryptDestroyKey),
+    E(CryptDestroyKey), E(RegOpenKeyExW), E(RegQueryValueExW), E(RegEnumKeyExW), E(GetUserNameA), E(GetUserNameW),
+    E(RegisterEventSourceA), E(ReportEventA), E(DeregisterEventSource),
 };
 #undef E
 ImportRegistrar g_advapi32(kAdvapi32);
