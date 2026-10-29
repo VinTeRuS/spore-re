@@ -56,6 +56,10 @@ public:
     void Set(uint32_t i, void* p) {
         chunks_[i >> kBits].load(std::memory_order_relaxed)[i & kMask].store(p, std::memory_order_release);
     }
+    // True when i names a slot that was ever handed out (a guest "object" that is no wrapper of ours has garbage there).
+    bool Valid(uint32_t i) const {
+        return i < size_ && chunks_[i >> kBits].load(std::memory_order_acquire) != nullptr;
+    }
     uint32_t Append(void* p) {
         uint32_t i = size_;
         if ((i >> kBits) >= kChunks) Fatal("d3d9: too many objects");
@@ -83,9 +87,19 @@ T* Host(uint32_t guest) {
     return static_cast<T*>(g_hosts.Get(R32(guest + 4)));
 }
 
+// An object pointer the game passes as an argument (SetTexture, SetStreamSource, ...). Spore sometimes hands over a
+// stale raster's pointer that is no wrapper at all: logged and treated as NULL (valid for those calls) instead of
+// reading a host slot out of garbage.
 template <typename T>
 T* Unwrap(uint32_t guest) {
-    return guest ? Host<T>(guest) : nullptr;
+    if (!guest) return nullptr;
+    uint32_t index = R32(guest + 4);
+    if (!g_hosts.Valid(index)) {
+        static std::atomic<int> logged{0};
+        if (logged++ < 20) Log("d3d9: %08x is not a D3D object (vtable %08x, index %08x); used as NULL", guest, R32(guest), index);
+        return nullptr;
+    }
+    return Host<T>(guest);
 }
 
 uint32_t WrapAs(void* host, const char* iface) {
@@ -323,13 +337,17 @@ bool IsBlockCompressed(D3DFORMAT f) {
 
 // Maps the host's locked memory into a guest buffer: copies it in unless the lock discards or never overwrites
 // (the guest then only writes), and remembers to copy it back on unlock unless read-only.
-uint32_t ShadowLock(void* object, uint32_t sub, void* host, uint32_t size, DWORD flags) {
+// `reach`: how far the game may write from the returned pointer without harm on Windows, where it points into the
+// resource itself (buffers: to the end of the buffer, even past the locked range). The shadow covers all of it, so
+// such writes land in it instead of the guest heap next to it; only the locked `size` is copied back.
+uint32_t ShadowLock(void* object, uint32_t sub, void* host, uint32_t size, DWORD flags, uint32_t reach = 0) {
     std::lock_guard<std::recursive_mutex> lock(g_mutex);
     Shadow& s = g_shadows[{object, sub}];
-    if (s.capacity < size) {
+    uint32_t need = reach > size ? reach : size;
+    if (s.capacity < need) {
         if (s.guest) HeapFree(s.guest);
-        s.guest = HeapAlloc(size);
-        s.capacity = size;
+        s.guest = HeapAlloc(need);
+        s.capacity = need;
     }
     s.size = size;
     s.host = host;
@@ -1220,12 +1238,11 @@ void BufferLock(Ctx* c) {
     void* p = nullptr;
     HRESULT hr = b->Lock(offset, size, &p, flags);
     if (SUCCEEDED(hr)) {
-        if (!size) {
-            Desc d;
-            b->GetDesc(&d);
-            size = d.Size - offset;
-        }
-        W32(out, ShadowLock(b, 0, p, size, flags));
+        Desc d;
+        b->GetDesc(&d);
+        uint32_t reach = d.Size > offset ? d.Size - offset : size;
+        if (!size) size = reach;
+        W32(out, ShadowLock(b, 0, p, size, flags, reach));
     }
     Return(c, uint32_t(hr), 5);
 }
