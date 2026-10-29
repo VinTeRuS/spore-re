@@ -49,12 +49,15 @@ NATIVE_OVERRIDES = set()
 INLINE_HELPERS = {}
 SETJMP_IAT = set()
 LONGJMP_IAT = set()
+# CRT imports done in place at their call sites (IAT slot -> memcpy/memmove/memset): no dispatch, no register
+# spill; the bytes move with plain host memmove/memset between ordering fences (RecompMemmove, runtime.h).
+INLINE_IMPORTS = {}
 
 
 def load_config(path):
     """Reads a game config module (see tools/recomp/game.py) into the globals above."""
     global IMAGE, IMAGE_NAME, FUNCTIONS_CSV, EXTRA_FUNCTIONS, BASE, ORIG_BASE
-    global SETJMP_TARGETS, NATIVE_OVERRIDES, INLINE_HELPERS, SETJMP_IAT, LONGJMP_IAT
+    global SETJMP_TARGETS, NATIVE_OVERRIDES, INLINE_HELPERS, SETJMP_IAT, LONGJMP_IAT, INLINE_IMPORTS
     cfg = {"__file__": path}
     with open(path) as f:
         exec(compile(f.read(), path, "exec"), cfg)
@@ -68,6 +71,7 @@ def load_config(path):
     INLINE_HELPERS = dict(cfg.get("INLINE_HELPERS", {}))
     SETJMP_IAT = set(cfg.get("SETJMP_IAT", ()))
     LONGJMP_IAT = set(cfg.get("LONGJMP_IAT", ()))
+    INLINE_IMPORTS = dict(cfg.get("INLINE_IMPORTS", {}))
 
 
 def default_config():
@@ -152,8 +156,9 @@ def rebase(new_base):
     """Generates code for the engine loaded at `new_base` instead of its preferred base (the native host on Android,
     where ART owns 0x10000000): every address taken from the analysis moves by the same delta, and the image bytes
     get the DLL's base relocations applied (relocate_pe), exactly as the loader does at run time."""
-    global BASE, SETJMP_TARGETS, SETJMP_IAT, LONGJMP_IAT, INLINE_HELPERS
+    global BASE, SETJMP_TARGETS, SETJMP_IAT, LONGJMP_IAT, INLINE_HELPERS, INLINE_IMPORTS
     delta = new_base - ORIG_BASE
+    INLINE_IMPORTS = {a + delta: k for a, k in INLINE_IMPORTS.items()}
     BASE = new_base
     INLINE_HELPERS = {a + delta: k for a, k in INLINE_HELPERS.items()}
     SETJMP_TARGETS = {a + delta for a in SETJMP_TARGETS}
@@ -221,6 +226,16 @@ def load_functions():
         extents[va] = max(size, nxt - va)
     return extents
 
+
+
+def inline_import(kind):
+    """C for a cdecl CRT call done in place (arguments at [esp], [esp+4], [esp+8]; the caller pops them)."""
+    args = "R32(c->esp), R32(c->esp + 4u), R32(c->esp + 8u)"
+    if kind in ("memcpy", "memmove"):
+        return f"c->eax = RecompMemmove({args});"
+    if kind == "memset":
+        return f"c->eax = RecompMemset({args});"
+    raise ValueError(f"unknown inline import {kind}")
 
 
 def inline_helper(kind, nxt):
@@ -368,7 +383,7 @@ _FLAG_CALLS = [("SubFlags(c, ", "SubFlagsL(&rf, "), ("AddFlags(c, ", "AddFlagsL(
                ("RecompSahf(c, ", "RecompSahfL(&rf, "), ("RecompEflags(c)", "RecompEflagsL(&rf)"),
                ("RecompSetEflags(c, ", "RecompSetEflagsL(&rf, "), ("X87CompareFlags(c, ", "X87CompareFlagsL(&rf, ")]
 # Callees that read or write the general registers through the context: spill before, reload after.
-_SPILL_CALL_RE = re.compile(r"\b(f_[0-9a-f]{8}|RecompDispatch|RecompUnimplemented|RecompCpuid|RecompLongjmp)\(c\b")
+_SPILL_CALL_RE = re.compile(r"\b(f_[0-9a-f]{8}|RecompDispatch|RecompUnimplemented|RecompCpuid|RecompLongjmp|RecompRepMovs|RecompRepStos)\(c\b")
 
 
 def _wrap_calls(line):
@@ -531,6 +546,16 @@ class FunctionCompiler:
         # through the last instruction).
         for i in self.md.disasm(self.pe.get_data(addr - BASE, 16), addr, count=1):
             return i
+        return None
+
+    def thunk_iat(self, t):
+        """IAT slot of an import thunk `jmp dword ptr [slot]` at t, or None."""
+        try:
+            b = self.pe.get_data(t - BASE, 6)
+        except Exception:
+            return None
+        if len(b) == 6 and b[0] == 0xFF and b[1] == 0x25:
+            return int.from_bytes(b[2:6], "little")
         return None
 
     def follow_jmp_thunks(self, t):
@@ -847,11 +872,15 @@ class FunctionCompiler:
                         "else { RecompSetjmpResume(c, R32(c->esp)); } }")
             if is_iat and (op.mem.disp & 0xffffffff) in LONGJMP_IAT:
                 return "RecompLongjmp(c, R32(c->esp), R32(c->esp + 4u));"
+            if is_iat and (op.mem.disp & 0xffffffff) in INLINE_IMPORTS:
+                return inline_import(INLINE_IMPORTS[op.mem.disp & 0xffffffff])
             if ops[0].type == X.X86_OP_IMM:
                 t = ops[0].imm & 0xffffffff
                 final = self.follow_jmp_thunks(t)
                 if final in INLINE_HELPERS:
                     return inline_helper(INLINE_HELPERS[final], nxt)
+                if self.thunk_iat(final) in INLINE_IMPORTS:
+                    return inline_import(INLINE_IMPORTS[self.thunk_iat(final)])
                 if t in self.known:
                     self.direct_calls.add(t)
                     return (f"Push32(c, 0x{nxt:08x}u); if (RecompDirect(0x{t:08x}u)) f_{t:08x}(c); "
@@ -874,7 +903,12 @@ class FunctionCompiler:
                 val = {4: "c->eax", 1: "(uint8_t)c->eax", 2: "(uint16_t)c->eax"}[width]
                 one = f"{wr}(c->edi, {val}); c->edi += {step};"
             if rep:
-                return f"while (c->ecx) {{ {one} c->ecx--; }}"
+                loop = f"while (c->ecx) {{ {one} c->ecx--; }}"
+                # Forward and non-overlapping (or a fill): one host memmove/fill between fences; otherwise the
+                # element loop, which also gives overlapping copies their byte-pattern semantics.
+                if base.startswith("movs"):
+                    return (f"if (!c->df && RecompRepMovs(c, {width})) {{}} else {loop}")
+                return f"if (!c->df && RecompRepStos(c, {width})) {{}} else {loop}"
             return one
         if base in ("cmpsb", "cmpsd", "cmpsw", "scasb", "scasd"):
             width = {"b": 1, "d": 4, "w": 2}[base[-1]]
