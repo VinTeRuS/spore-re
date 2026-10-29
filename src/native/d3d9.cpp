@@ -102,14 +102,41 @@ uint32_t WrapAs(void* host, const char* iface) {
     return g;
 }
 
+void DeadQueryInterface(Ctx* c) {
+    if (Arg(c, 2)) W32(Arg(c, 2), 0);
+    Return(c, E_NOINTERFACE, 3);
+}
+void DeadAddRef(Ctx* c) { Return(c, 0, 1); }
+void DeadRelease(Ctx* c) {
+    static int logged = 0;
+    if (logged++ < 20) Log("d3d9: Release of an already released object %08x (from %08x) ignored", Arg(c, 0), R32(c->esp));
+    Return(c, 0, 1);
+}
+void DeadMethod(Ctx* c) { Fatal("d3d9: method call on a released object %08x (from %08x)", Arg(c, 0), R32(c->esp)); }
+uint32_t DeadVtable() {
+    static uint32_t vt = [] {
+        static const ImportDef defs[] = {{"d3d9.com", "Dead::QueryInterface", DeadQueryInterface},
+                                         {"d3d9.com", "Dead::AddRef", DeadAddRef},
+                                         {"d3d9.com", "Dead::Release", DeadRelease},
+                                         {"d3d9.com", "Dead::Method", DeadMethod}};
+        RegisterImports(defs, 4);
+        uint32_t t = HeapAlloc(4 * 128);
+        for (uint32_t k = 0; k < 128; ++k) W32(t + 4 * k, ImportThunk("d3d9.com", defs[k < 3 ? k : 3].name));
+        return t;
+    }();
+    return vt;
+}
+
 void Forget(uint32_t guest) {
     std::lock_guard<std::recursive_mutex> lock(g_mutex);
     uint32_t index = R32(guest + 4);
     auto it = g_guest_of.find(g_hosts.Get(index));
     if (it != g_guest_of.end() && it->second == guest) g_guest_of.erase(it);
     g_hosts.Set(index, nullptr);
-    W32(guest, 0);
-    // The guest block is not reused: a stale guest pointer then faults on a null vtable instead of aliasing.
+    // The guest block is not reused. Its vtable becomes the dead one: a late Release or AddRef from the game (the
+    // engine releases some rasters once more than it acquired, which Windows tolerates for objects the device still
+    // holds) does nothing, and any other method stops with a clear message instead of jumping through garbage.
+    W32(guest, DeadVtable());
 }
 
 uint32_t Wrap(IDirect3D9* p) { return WrapAs(p, "IDirect3D9"); }

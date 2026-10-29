@@ -64,7 +64,7 @@ endif
 
 SRCS := main.cpp memory.cpp loader.cpp imports.cpp runtime.cpp thread.cpp kernel32.cpp msvcrt.cpp user32.cpp \
         advapi32.cpp misc.cpp d3d9.cpp input.cpp dinput.cpp gamepad.cpp config.cpp watchdog.cpp vulkan_driver.cpp \
-        perf_hint.cpp stubs.cpp
+        perf_hint.cpp stubs.cpp dsound.cpp
 GEN := $(wildcard $(RECOMP_DIR)/*.c)
 OBJS = $(SRCS:%.cpp=$(OUT)/%.o) $(GEN:$(RECOMP_DIR)/%.c=$(OUT)/gen/%.o)
 

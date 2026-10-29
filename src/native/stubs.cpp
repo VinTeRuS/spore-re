@@ -1,6 +1,6 @@
 // Imports of SporeApp.exe with a small, self-contained implementation: winmm timer periods, the Steam API (the GOG build
-// still links steam_api.dll but runs without Steam), the D3DX math the game imports from d3dx9_27, an offline
-// Winsock and, for now, no DirectSound device. Everything
+// still links steam_api.dll but runs without Steam), the D3DX math the game imports from d3dx9_27, and an offline
+// Winsock. Everything
 // else missing logs and stops when called (imports.cpp), so real gaps show up in the log.
 #include <sys/stat.h>
 
@@ -171,13 +171,6 @@ void ws_inet_addr(Ctx* c) {
 }
 void ws_WSAFDIsSet(Ctx* c) { Return(c, 0, 2); }
 
-// ---- DirectSound: no device yet (DSERR_NODRIVER); the game runs silent ----
-void ds_DirectSoundCreate(Ctx* c) {
-    Log("DirectSoundCreate: no audio device (not implemented yet)");
-    if (Arg(c, 1)) W32(Arg(c, 1), 0);
-    Return(c, 0x88780078u, 3);
-}
-void ds_GetDeviceID(Ctx* c) { Return(c, 0x80004005u, 2); }
 
 
 // ---- shell32: known folders under C:\Users\Player (native_c next to the game, kernel32.cpp HostRootFor), apart
@@ -383,8 +376,6 @@ const ImportDef kStubs[] = {
     {"wsock32.dll", "#52", ws_Null<1>},   // gethostbyname
     {"wsock32.dll", "#10", ws_inet_addr},
     {"wsock32.dll", "#151", ws_WSAFDIsSet},
-    {"dsound.dll", "#1", ds_DirectSoundCreate},
-    {"dsound.dll", "#9", ds_GetDeviceID},
     {"winmm.dll", "timeBeginPeriod", w_timeBeginPeriod},
     {"winmm.dll", "timeEndPeriod", w_timeEndPeriod},
     {"steam_api.dll", "SteamAPI_Init", s_SteamAPI_Init},

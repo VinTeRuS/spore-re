@@ -93,6 +93,14 @@ extern "C" void RecompDispatch(Ctx* ctx, uint32_t target) {
     Ctx* saved = tl_ctx;
     tl_ctx = ctx;
     if (!DispatchImport(ctx, target)) {
+        // Usually a call through a vtable: show the registers and what the object and its vtable look like.
+        Log("bad call: eax %08x ecx %08x edx %08x ebx %08x esi %08x edi %08x esp %08x", ctx->eax, ctx->ecx, ctx->edx,
+            ctx->ebx, ctx->esi, ctx->edi, ctx->esp);
+        for (uint32_t r : {ctx->eax, ctx->ecx, ctx->edx, ctx->esi}) {
+            if (r < 0x10000 || r >= 0xfff00000u) continue;
+            Log("  [%08x]: %08x %08x %08x %08x %08x %08x", r, R32(r), R32(r + 4), R32(r + 8), R32(r + 12), R32(r + 16),
+                R32(r + 20));
+        }
         Fatal("call to %08x: neither recompiled nor an import (return address %08x)", target, R32(ctx->esp));
     }
     tl_ctx = saved;

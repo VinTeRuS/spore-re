@@ -1734,6 +1734,16 @@ ImportRegistrar g_kernel32(kKernel32);
 
 }  // namespace
 
+// SetEvent for host code (dsound.cpp position notifications): signals an event handle from any host thread.
+void SignalEventHandle(uint32_t handle) {
+    auto* e = static_cast<Event*>(HandleObject(handle));
+    std::lock_guard<std::mutex> lock(g_kernel_mutex);
+    if (e && e->type == KType::Event) {
+        e->state = true;
+        e->Notify();
+    }
+}
+
 // _beginthreadex (msvcrt.cpp): CreateThread's arguments in the same order, but cdecl (the caller pops them).
 void BeginThreadEx(Ctx* c) {
     k_CreateThread(c);
