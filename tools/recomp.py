@@ -668,7 +668,8 @@ class FunctionCompiler:
         if X.X86_PREFIX_LOCK in ins.prefix and base not in ("cmpxchg", "cmpxchg8b"):
             return self.locked_or_plain(ins, base)
 
-        if base in ("nop", "int3", "prefetcht0", "prefetchnta", "wait", "emms"):
+        if base in ("nop", "int3", "prefetcht0", "prefetcht1", "prefetcht2", "prefetchnta", "wait", "emms", "pause",
+                    "sfence", "lfence"):
             # Hints and FPU/MMX state syncs have no effect on the emulated state; only int3 traps.
             return "/* " + m + " */" if base != "int3" else f'RecompUnimplemented(c, 0x{ins.address:08x}u, "int3"); return;'
         if base == "mov" or base == "movabs":
@@ -894,6 +895,9 @@ class FunctionCompiler:
             return "c->df = 0;"
         if base == "std":
             return "c->df = 1;"
+        # ---- MMX (and the SSE forms that mix mm and xmm registers) ----
+        if ops_are_mmx(ins):
+            return self.simd(ins, base, 8)
         # ---- SSE ----
         if ops_are_xmm(ins) or base in SSE_MNEMONICS:
             return self.sse(ins, base)
@@ -949,6 +953,14 @@ class FunctionCompiler:
             return "RecompSetEflags(c, Pop32(c));"
         if base == "cpuid":
             return "RecompCpuid(c);"
+        if base == "rdtsc":
+            return "{ uint64_t t = RecompRdtsc(); c->eax = (uint32_t)t; c->edx = (uint32_t)(t >> 32); }"
+        if base == "mfence":
+            return "__atomic_thread_fence(__ATOMIC_SEQ_CST);"
+        if base == "stmxcsr":
+            return f"W32({self.address(ins, ops[0])}, c->mxcsr ? c->mxcsr : 0x1f80u);"
+        if base == "ldmxcsr":
+            return f"c->mxcsr = R32({self.address(ins, ops[0])});"
         if base == "in":
             return f'RecompUnimplemented(c, 0x{ins.address:08x}u, "port input"); return;'
         if base == "cwde":
@@ -1032,7 +1044,7 @@ class FunctionCompiler:
         d = ops[0]
         s = ops[1] if len(ops) > 1 else None
         # ---- moves ----
-        if base in ("movaps", "movups", "movdqa", "movdqu", "movapd", "movupd"):
+        if base in ("movaps", "movups", "movdqa", "movdqu", "movapd", "movupd", "movntps", "movntdq"):
             if d.type == X.X86_OP_MEM:
                 return f"RecompStore128({self.address(ins, d)}, {self.xmm(ins, s)});"
             return f"{self.xmm(ins, d)} = {self.v128(ins, s)};"
@@ -1165,6 +1177,104 @@ class FunctionCompiler:
         if base == "cvtdq2ps":
             return (f"{{ XmmValue a = {self.v128(ins, s)}; XmmValue* r = &{self.xmm(ins, d)}; for (int k = 0; k < 4; ++k) "
                     f"r->f[k] = (float)(int32_t)a.u32[k]; }}")
+        approx = {"rcpps": "VRcp", "rsqrtps": "VRsqrt"}
+        if base in approx:
+            return (f"{{ XmmValue a = {self.v128(ins, s)}; XmmValue* r = &{self.xmm(ins, d)}; for (int k = 0; k < 4; ++k) "
+                    f"r->f[k] = {approx[base]}(a.f[k]); }}")
+        if base in ("rcpss", "rsqrtss"):
+            return f"{self.xmm(ins, d)}.f[0] = {approx[base[:-2] + 'ps']}({self.f32(ins, s)});"
+        # packed integer SSE2: the same lane helpers as MMX over 16 bytes
+        return self.simd(ins, base, 16)
+
+    # ---- packed integer (MMX on mm registers, SSE2 on xmm; see runtime/runtime_simd.h) ----
+    SIMD_BINARY = {
+        "paddb": "VPaddB", "paddw": "VPaddW", "paddd": "VPaddD", "paddq": "VPaddQ",
+        "psubb": "VPsubB", "psubw": "VPsubW", "psubd": "VPsubD", "psubq": "VPsubQ",
+        "paddsb": "VPaddSB", "paddsw": "VPaddSW", "paddusb": "VPaddUSB", "paddusw": "VPaddUSW",
+        "psubsb": "VPsubSB", "psubsw": "VPsubSW", "psubusb": "VPsubUSB", "psubusw": "VPsubUSW",
+        "pmullw": "VPmullW", "pmulhw": "VPmulhW", "pmulhuw": "VPmulhUW", "pmaddwd": "VPmaddWD", "pmuludq": "VPmulUDQ",
+        "pcmpeqb": "VPcmpeqB", "pcmpeqw": "VPcmpeqW", "pcmpeqd": "VPcmpeqD",
+        "pcmpgtb": "VPcmpgtB", "pcmpgtw": "VPcmpgtW", "pcmpgtd": "VPcmpgtD",
+        "pminub": "VPminUB", "pmaxub": "VPmaxUB", "pminsw": "VPminSW", "pmaxsw": "VPmaxSW",
+        "pavgb": "VPavgB", "pavgw": "VPavgW", "psadbw": "VPsadBW",
+        "pand": "VPand", "pandn": "VPandn", "por": "VPor", "pxor": "VPxor",
+        "packsswb": "VPacksSWB", "packssdw": "VPacksSDW", "packuswb": "VPackUSWB",
+        "punpcklbw": "VPunpcklBW", "punpcklwd": "VPunpcklWD", "punpckldq": "VPunpcklDQ", "punpcklqdq": "VPunpcklQDQ",
+        "punpckhbw": "VPunpckhBW", "punpckhwd": "VPunpckhWD", "punpckhdq": "VPunpckhDQ", "punpckhqdq": "VPunpckhQDQ",
+    }
+    SIMD_SHIFT = {"psllw": "VPsllW", "pslld": "VPsllD", "psllq": "VPsllQ", "psrlw": "VPsrlW", "psrld": "VPsrlD",
+                  "psrlq": "VPsrlQ", "psraw": "VPsraW", "psrad": "VPsraD", "psrldq": "VPsrlDQ", "pslldq": "VPsllDQ"}
+
+    def vreg(self, ins, op):
+        name = ins.reg_name(op.reg)
+        if name.startswith("mm"):
+            return f"(uint8_t*)&c->mm[{int(name[2:])}]"
+        if name.startswith("xmm"):
+            return f"(uint8_t*)&c->xmm[{int(name[3:])}]"
+        raise Unsupported(f"register {name}")
+
+    def vsrc(self, ins, op, n):
+        """Statement copying a vector source (register or memory, which may be narrower than n) into local vs."""
+        if op.type == X.X86_OP_REG:
+            return f"uint8_t vs[16] = {{0}}; memcpy(vs, {self.vreg(ins, op)}, {n});"
+        if op.type == X.X86_OP_MEM:
+            return f"uint8_t vs[16] = {{0}}; memcpy(vs, G({self.address(ins, op)}), {op.size or n});"
+        raise Unsupported("vector source")
+
+    def simd(self, ins, base, n):
+        ops = ins.operands
+        d = ops[0] if ops else None
+        s = ops[1] if len(ops) > 1 else None
+        is_reg = lambda op, p: op.type == X.X86_OP_REG and ins.reg_name(op.reg).startswith(p)
+        if base in self.SIMD_BINARY:
+            if d.type != X.X86_OP_REG:
+                raise Unsupported(f"{base} to memory")
+            return f"{{ {self.vsrc(ins, s, n)} {self.SIMD_BINARY[base]}({self.vreg(ins, d)}, vs, {n}); }}"
+        if base in self.SIMD_SHIFT:
+            if s.type == X.X86_OP_IMM:
+                return f"{self.SIMD_SHIFT[base]}({self.vreg(ins, d)}, {s.imm & 0xff}u, {n});"
+            return (f"{{ {self.vsrc(ins, s, n)} {self.SIMD_SHIFT[base]}({self.vreg(ins, d)}, "
+                    f"VLANE_GET(uint64_t, vs, 0), {n}); }}")
+        if base in ("movq", "movntq", "movd"):
+            size = 8 if base != "movd" else 4
+            if is_reg(d, "mm"):
+                if s.type == X.X86_OP_MEM:
+                    v = f"R64({self.address(ins, s)})" if size == 8 else f"(uint64_t)R32({self.address(ins, s)})"
+                elif is_reg(s, "mm") or is_reg(s, "xmm"):
+                    v = f"VLANE_GET(uint64_t, {self.vreg(ins, s)}, 0)"
+                else:
+                    v = f"(uint64_t){self.read(ins, s, 32)}"
+                return f"c->mm[{int(ins.reg_name(d.reg)[2:])}] = {v};"
+            src = f"c->mm[{int(ins.reg_name(s.reg)[2:])}]"
+            if d.type == X.X86_OP_MEM:
+                return (f"W64({self.address(ins, d)}, {src});" if size == 8
+                        else f"W32({self.address(ins, d)}, (uint32_t){src});")
+            if is_reg(d, "xmm"):
+                return f"{{ XmmValue* x = &{self.xmm(ins, d)}; x->u64[0] = {src}; x->u64[1] = 0; }}"
+            return self.write(ins, d, f"(uint32_t){src}", 32)
+        if base == "movdq2q":
+            return f"c->mm[{int(ins.reg_name(d.reg)[2:])}] = {self.xmm(ins, s)}.u64[0];"
+        if base == "movq2dq":
+            return (f"{{ XmmValue* x = &{self.xmm(ins, d)}; x->u64[0] = c->mm[{int(ins.reg_name(s.reg)[2:])}]; "
+                    f"x->u64[1] = 0; }}")
+        if base == "pshufw":
+            return f"{{ {self.vsrc(ins, s, 8)} VPshufW({self.vreg(ins, d)}, vs, {ops[2].imm & 0xff}u); }}"
+        if base == "pextrw":
+            lane = ops[2].imm & (n // 2 - 1)
+            return self.write(ins, d, f"(uint32_t)VLANE_GET(uint16_t, {self.vreg(ins, s)}, {lane})", 32)
+        if base == "pinsrw":
+            lane = ops[2].imm & (n // 2 - 1)
+            v = (f"R16({self.address(ins, s)})" if s.type == X.X86_OP_MEM else f"(uint16_t){self.read(ins, s, 32)}")
+            return f"VLANE_SET(uint16_t, {self.vreg(ins, d)}, {lane}, {v});"
+        if base == "pmovmskb":
+            return self.write(ins, d, f"VPmovmskB({self.vreg(ins, s)}, {n})", 32)
+        if base == "cvtpi2ps":
+            return (f"{{ {self.vsrc(ins, s, 8)} XmmValue* x = &{self.xmm(ins, d)}; "
+                    f"x->f[0] = (float)VLANE_GET(int32_t, vs, 0); x->f[1] = (float)VLANE_GET(int32_t, vs, 1); }}")
+        if base in ("cvtps2pi", "cvttps2pi"):
+            conv = "RecompTruncF32(f)" if base == "cvttps2pi" else "RecompRoundToInt((double)f)"
+            return (f"{{ {self.vsrc(ins, s, 8)} uint8_t* r = {self.vreg(ins, d)}; for (int k = 0; k < 2; ++k) "
+                    f"{{ float f = VLANE_GET(float, vs, k); VLANE_SET(int32_t, r, k, {conv}); }} }}")
         raise Unsupported(base)
 
     # ---- x87 (double-precision model with control/status words) ----
@@ -1406,6 +1516,10 @@ class FunctionCompiler:
         # Prototypes last: tail jumps added while assembling the body are direct calls too.
         protos = [f"void f_{t:08x}(Ctx* c);" for t in sorted(self.direct_calls - {self.va})]
         return "\n".join(protos + out)
+
+
+def ops_are_mmx(ins):
+    return any(o.type == X.X86_OP_REG and ins.reg_name(o.reg).startswith("mm") for o in ins.operands)
 
 
 def ops_are_xmm(ins):

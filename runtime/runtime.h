@@ -33,6 +33,10 @@ typedef struct Ctx {
     uint32_t st_top;
     uint16_t fpu_sw, fpu_cw;
     XmmValue xmm[8];
+    /* MMX registers, kept apart from the x87 stack (the engines never move data between the two through the
+     * aliased register file; emms is a no-op) */
+    uint64_t mm[8];
+    uint32_t mxcsr;
 } Ctx;
 
 extern uint8_t* RecompMemoryBase;
@@ -274,5 +278,7 @@ void RecompBridgeRestore(const uint8_t state[32]);
 #ifdef __cplusplus
 }
 #endif
+
+#include "runtime_simd.h"
 
 #endif
