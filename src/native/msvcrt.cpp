@@ -1,5 +1,4 @@
-// MSVCR90 for the native host (taken over from proto-re's MSVCR80 shim; the two expose the same C runtime ABI for
-// what the game imports). Guest pointers are host
+// MSVCR90 for the native host: the C runtime functions SporeApp.exe imports. Guest pointers are host
 // pointers (flat guest memory), so most functions forward to the host C library directly. Variadic functions read
 // their arguments from the guest stack with the 32-bit MSVC layout.
 #include <sys/stat.h>

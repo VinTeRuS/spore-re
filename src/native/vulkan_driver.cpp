@@ -270,7 +270,7 @@ void SelectVulkanDriver() {
     // a black screen), while Turnip from Mesa 26.3 knows these GPUs; so Turnip is tried first like elsewhere.
     const std::string model = GpuModel();
     if (!model.empty()) Log("vulkan: GPU %s", model.c_str());
-    const char* libdir = getenv("SPORERE_NATIVE_LIB_DIR");  // set by ProtoActivity: the APK's extracted libraries
+    const char* libdir = getenv("SPORERE_NATIVE_LIB_DIR");  // set by SporeActivity: the APK's extracted libraries
     if (!libdir) {
         LogSystemDevice();
         return;

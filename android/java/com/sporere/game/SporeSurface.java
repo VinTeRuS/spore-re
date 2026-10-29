@@ -9,11 +9,11 @@ import org.libsdl.app.SDLSurface;
  * SDL's surface, telling the native D3D9 bridge when the window goes away: the engine's render thread presents on
  * its own schedule, and a present (or a swap chain recreation) on a destroyed window crashes in the Vulkan loader.
  */
-public class ProtoSurface extends SDLSurface {
+public class SporeSurface extends SDLSurface {
     static native void nativeSurfaceGone();   // waits for a present in flight, then holds presents back
     static native void nativeSurfaceReady();
 
-    public ProtoSurface(Context context) {
+    public SporeSurface(Context context) {
         super(context);
     }
 

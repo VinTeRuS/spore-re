@@ -198,21 +198,6 @@ static long ResidentMiB() {
 }
 }  // namespace native
 
-#ifdef __ANDROID__
-extern "C" JNIEXPORT jfloat JNICALL Java_com_sporere_game_TouchControls_nativeFps(JNIEnv*, jclass) {
-    return native::g_fps.load();
-}
-extern "C" JNIEXPORT jfloat JNICALL Java_com_sporere_game_TouchControls_nativeFrameMs(JNIEnv*, jclass) {
-    return native::g_frame_ms.load();
-}
-extern "C" JNIEXPORT jint JNICALL Java_com_sporere_game_TouchControls_nativeMemoryMiB(JNIEnv*, jclass) {
-    return jint(native::ResidentMiB());
-}
-extern "C" JNIEXPORT void JNICALL Java_com_sporere_game_TouchControls_nativeSetFpsLimit(JNIEnv*, jclass, jint fps) {
-    native::g_fps_limit.store(fps);
-    native::PerfHintTarget(fps);
-}
-#endif
 
 // big.LITTLE: keep the engine's main thread on the fast cores (cpu_capacity >= half of the largest). The scheduler
 // usually gets there by itself, but a frame-bound thread that waits on the GPU looks idle to it now and then and

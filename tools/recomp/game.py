@@ -1,6 +1,6 @@
 # Recompiler settings for Spore (GOG 3.1.0.22, SporebinEP1/SporeApp.exe; sha256 in re/target.sha256), read by
 # third_party/x86recomp. Addresses at the exe's preferred base 0x400000; helpers found with find_helpers.py against
-# proto-re's config and cross-checked with Ghidra's names (__allshl, __alloca_probe*, __aullshr, __allmul).
+# an already configured game and cross-checked with Ghidra's names (__allshl, __alloca_probe*, __aullshr, __allmul).
 import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

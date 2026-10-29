@@ -27,13 +27,13 @@ import java.io.InputStream;
 import java.io.OutputStream;
 
 /**
- * Launcher: finds the game files and starts ProtoActivity, or explains where to put them. The game can live in the
+ * Launcher: finds the game files and starts SporeActivity, or explains where to put them. The game can live in the
  * app's own folder (Android/data/com.sporere.game/files/game, which file managers often cannot open on Android 11+)
- * or in /sdcard/Prototype, which needs "all files access" (storage permission before Android 11).
+ * or in /sdcard/Spore, which needs "all files access" (storage permission before Android 11).
  */
 public class SetupActivity extends Activity {
     /** Shown on the setup screen and in the in-game settings panel. */
-    // The native library checks CREDIT (ProtoActivity hands it over): a build without it does not start.
+    // The native library checks CREDIT (SporeActivity hands it over): a build without it does not start.
     static final String CREDIT = "Spore Android port by VinTeRuS";
     static final String CREDIT_URL = "patreon.com/cw/VinTeRuS";
     static final String SUPPORT_URL = "https://www.patreon.com/cw/VinTeRuS/membership";
@@ -48,7 +48,7 @@ public class SetupActivity extends Activity {
         }
     }
 
-    private static final String DLL = "SporebinEP1/SporeApp.exe";
+    private static final String EXE = "SporebinEP1/SporeApp.exe";
     private static final int REQUEST_STORAGE = 1;
 
     private File appGame() {
@@ -72,21 +72,38 @@ public class SetupActivity extends Activity {
     }
 
     /**
-     * Files the game reads at start (from the PC game folder). Without proto_uv.dat, for one, it closes a second
-     * after starting with no message.
+     * Files the game needs from the PC game folder (GOG's SPORE folder with Galactic Adventures): the program and the
+     * main archives of the base game and the expansion.
      */
     private static final String[] REQUIRED = {
-        DLL, "proto_uv.dat", "cementfiles.p3d", "skuinfo.p3d", "art.rcf", "cells.rcf", "scripts.rcf",
-        "shaders.rcf", "00woi.rcf",
+        EXE, "Data/Spore_Game.package", "Data/Spore_Graphics.package", "Data/Spore_Content.package",
+        "DataEP1/Spore_EP1_Data.package",
     };
 
-    /** The required files missing from `dir` (names compared ignoring case, like the game does). */
+    /** `rel` under `dir`, each path component matched ignoring case (as the game does on Windows); null if absent. */
+    private static File find(File dir, String rel) {
+        File cur = dir;
+        for (String part : rel.split("/")) {
+            String[] names = cur == null ? null : cur.list();
+            File next = null;
+            if (names != null) {
+                for (String n : names) {
+                    if (n.equalsIgnoreCase(part)) {
+                        next = new File(cur, n);
+                        break;
+                    }
+                }
+            }
+            if (next == null) return null;
+            cur = next;
+        }
+        return cur;
+    }
+
+    /** The required files missing from `dir`. */
     private static java.util.List<String> missing(File dir) {
-        java.util.Set<String> have = new java.util.HashSet<>();
-        String[] names = dir == null ? null : dir.list();
-        if (names != null) for (String n : names) have.add(n.toLowerCase(java.util.Locale.ROOT));
         java.util.List<String> out = new java.util.ArrayList<>();
-        for (String r : REQUIRED) if (!have.contains(r)) out.add(r);
+        for (String r : REQUIRED) if (find(dir, r) == null) out.add(r);
         return out;
     }
 
@@ -96,8 +113,8 @@ public class SetupActivity extends Activity {
         File shared = sharedGame();
         if (hasSharedAccess()) shared.mkdirs();
         File found = null;
-        if (app != null && new File(app, DLL).canRead()) found = app;
-        else if (hasSharedAccess() && new File(shared, DLL).canRead()) found = shared;
+        if (app != null && find(app, EXE) != null) found = app;
+        else if (hasSharedAccess() && find(shared, EXE) != null) found = shared;
         if (found == null) {
             showHelp(app, shared, null);
             return;
@@ -124,7 +141,7 @@ public class SetupActivity extends Activity {
         } catch (ErrnoException ignored) {
             // the bundled drivers are used
         }
-        startActivity(new Intent(this, ProtoActivity.class));
+        startActivity(new Intent(this, SporeActivity.class));
         finish();
     }
 
@@ -209,9 +226,9 @@ public class SetupActivity extends Activity {
             p.setTextColor(Color.rgb(255, 120, 100));
             col.addView(p);
         }
-        col.addView(text("Copy the contents of your Prototype folder (PC version, Steam): prototypeenginef.dll, "
-                + "proto_uv.dat, all .rcf and .p3d files and the art, audio and scripts folders, to one of these "
-                + "places:", 15, false));
+        col.addView(text("Copy these folders from your SPORE folder on the PC (GOG version, with Galactic "
+                + "Adventures): SporebinEP1, Data, DataEP1 and bp1content (about 6 GB), to one of these places:",
+                15, false));
         col.addView(text("1. " + (app != null ? app.getAbsolutePath() : "Android/data/" + getPackageName()
                 + "/files/game") + "\n   The folder exists now. On Android 11+ most file managers cannot open "
                 + "Android/data; copy from a PC over USB, or use option 2.", 14, false));

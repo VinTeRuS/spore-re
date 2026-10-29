@@ -7,7 +7,7 @@ PLATFORM ?= linux
 # Generated at the exe's own base: third_party/x86recomp/tools/recomp.py --functions all --split 400 --out build/recomp/all
 RECOMP_DIR ?= ../../build/recomp/all
 RUNTIME := ../../third_party/x86recomp/runtime
-DXVK ?= $(HOME)/proto-re-data/deps/dxvk
+DXVK ?= $(HOME)/spore-re-data/deps/dxvk
 # Guest memory: a 4 GiB window at 64 GiB (guest.h kGuestBase), clear of the low 4 GiB that Android's Java heap and
 # Qualcomm's GPU driver use.
 COMMON_FLAGS := -DRECOMP_FLAT_MEMORY -DRECOMP_GUEST_BASE=0x1000000000ull -fsigned-char -I$(RUNTIME)
@@ -23,7 +23,7 @@ CXXFLAGS = -std=c++17 -O2 -g -Wall -Wextra -Wno-unused-parameter $(COMMON_FLAGS)
 ifeq ($(PLATFORM),android)
 ABI ?= arm64-v8a
 NDK ?= $(HOME)/Android/Sdk/ndk/28.2.13676358
-DEPS ?= $(HOME)/proto-re-data/android-deps/$(ABI)
+DEPS ?= $(HOME)/spore-re-data/android-deps/$(ABI)
 TRIPLE := $(if $(filter x86_64,$(ABI)),x86_64,aarch64)-linux-android26
 TOOLCHAIN := $(NDK)/toolchains/llvm/prebuilt/linux-x86_64/bin
 CXX := $(TOOLCHAIN)/$(TRIPLE)-clang++
@@ -41,7 +41,7 @@ RECOMP_EXTRA := $(if $(filter 1,$(TSO)),-DRECOMP_TSO)
 DEP_INCLUDES := -I$(DEPS)/include
 LDFLAGS := -shared -Wl,-Bsymbolic -static-libstdc++ -Wl,--no-undefined -L$(DEPS)/lib -ldxvk_d3d9 -lSDL2 -llog -landroid
 # Adreno: Turnip and libadrenotools from android/build-turnip.sh (arm64 only; built without them otherwise).
-TURNIP ?= $(HOME)/proto-re-data/android-turnip
+TURNIP ?= $(HOME)/spore-re-data/android-turnip
 ifneq ($(and $(filter arm64-v8a,$(ABI)),$(wildcard $(TURNIP)/lib/libadrenotools.a)),)
 DEP_INCLUDES += -I$(TURNIP)/include -DSPORERE_ADRENOTOOLS
 LDFLAGS += -L$(TURNIP)/lib -ladrenotools -llinkernsbypass -ldl \
@@ -54,7 +54,7 @@ else
 CXX ?= g++
 CC ?= gcc
 OUT ?= ../../build/native
-# DXVK native (D3D9 on Vulkan), built for proto-re (same deps).
+# DXVK native (D3D9 on Vulkan) for the desktop build.
 DXVK_LIB ?= $(DXVK)/build-native/src/d3d9
 TARGET_FLAGS :=
 DEP_INCLUDES :=

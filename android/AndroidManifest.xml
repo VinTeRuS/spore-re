@@ -48,7 +48,7 @@
         </activity>
 
         <activity
-            android:name="com.sporere.game.ProtoActivity"
+            android:name="com.sporere.game.SporeActivity"
             android:label="Spore · VinTeRuS"
             android:exported="false"
             android:screenOrientation="sensorLandscape"

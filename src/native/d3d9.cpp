@@ -872,7 +872,7 @@ void MaybeScreenshot(IDirect3DDevice9* dev) {
 }
 
 // The window can go away under the render thread (Android destroys the surface when the app leaves the screen):
-// ProtoSurface.surfaceDestroyed waits for a present in flight and holds presents back until the surface is back,
+// SporeSurface.surfaceDestroyed waits for a present in flight and holds presents back until the surface is back,
 // as presenting or recreating the swap chain on a destroyed window crashes in the Vulkan loader. A skipped present
 // just drops the frame.
 std::mutex g_present_mutex;
@@ -902,11 +902,11 @@ bool WaitForWindow(int seconds) {
     return false;
 }
 
-extern "C" JNIEXPORT void JNICALL Java_com_sporere_game_ProtoSurface_nativeSurfaceGone(JNIEnv*, jclass) {
+extern "C" JNIEXPORT void JNICALL Java_com_sporere_game_SporeSurface_nativeSurfaceGone(JNIEnv*, jclass) {
     std::lock_guard<std::mutex> lock(g_present_mutex);
     g_surface_gone = true;
 }
-extern "C" JNIEXPORT void JNICALL Java_com_sporere_game_ProtoSurface_nativeSurfaceReady(JNIEnv*, jclass) {
+extern "C" JNIEXPORT void JNICALL Java_com_sporere_game_SporeSurface_nativeSurfaceReady(JNIEnv*, jclass) {
     std::lock_guard<std::mutex> lock(g_present_mutex);
     g_surface_gone = false;
 }

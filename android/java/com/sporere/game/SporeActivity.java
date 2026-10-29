@@ -22,7 +22,7 @@ import org.libsdl.app.SDLActivity;
 import org.libsdl.app.SDLSurface;
 
 /** SDL's activity running the native port (libmain.so: the recompiled engine and its platform layer). */
-public class ProtoActivity extends SDLActivity {
+public class SporeActivity extends SDLActivity {
     @Override
     protected String[] getLibraries() {
         return new String[] {"SDL2", "FAudio", "dxvk_d3d9", modernCpu() ? "main" : "main_v80"};
@@ -50,7 +50,7 @@ public class ProtoActivity extends SDLActivity {
 
     @Override
     protected SDLSurface createSDLSurface(Context context) {
-        return new ProtoSurface(context);
+        return new SporeSurface(context);
     }
 
     /**
@@ -75,8 +75,8 @@ public class ProtoActivity extends SDLActivity {
         }
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);  // no dimming while playing
-        // Spore is played with the mouse: SDL turns one-finger touches into left-button mouse events. Prototype's
-        // on-screen buttons (TouchControls) stay off until Spore has its own (right drag, pinch zoom).
+        // Spore is played with the mouse: SDL turns one-finger touches into left-button mouse events (its own
+        // touch gestures for camera and zoom are still to come).
         // The author's credit: on start, and small in a corner for the whole game (it lets touches through).
         Toast.makeText(this, SetupActivity.CREDIT, Toast.LENGTH_LONG).show();
         TextView mark = new TextView(this);

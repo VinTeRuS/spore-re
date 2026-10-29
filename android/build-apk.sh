@@ -11,9 +11,9 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SDK=${ANDROID_HOME:-$HOME/Android/Sdk}
 BUILD_TOOLS=${BUILD_TOOLS:-$SDK/build-tools/36.0.0}
 PLATFORM_JAR=${PLATFORM_JAR:-$SDK/platforms/android-35/android.jar}
-DEPS_ROOT=${DEPS_ROOT:-$HOME/proto-re-data/android-deps}
-TURNIP_ROOT=${TURNIP_ROOT:-$HOME/proto-re-data/android-turnip}
-SDL_SRC=${SDL_SRC:-$HOME/proto-re-data/android-deps-src/SDL2}
+DEPS_ROOT=${DEPS_ROOT:-$HOME/spore-re-data/android-deps}
+TURNIP_ROOT=${TURNIP_ROOT:-$HOME/spore-re-data/android-turnip}
+SDL_SRC=${SDL_SRC:-$HOME/spore-re-data/android-deps-src/SDL2}
 KEYSTORE=${KEYSTORE:-$HOME/.android/debug.keystore}
 ABIS=("${@:-arm64-v8a}")
 
@@ -37,7 +37,7 @@ for abi in "${ABIS[@]}"; do
     mkdir -p "$OUT/pkg/lib/$abi"
     cp "$ROOT/build/android/$abi/libmain.so" "$DEPS_ROOT/$abi"/lib/lib{SDL2,dxvk_d3d9}.so "$OUT/pkg/lib/$abi/"
     # arm64: libmain.so targets ARMv8.2 + RCpc; the ARMv8.0 build for older cores (make ... ARM_ARCH=armv8-a
-    # OUT=../../build/android/arm64-v8a-v80) ships next to it, ProtoActivity picks one at run time.
+    # OUT=../../build/android/arm64-v8a-v80) ships next to it, SporeActivity picks one at run time.
     # The Turnip probe program (an executable, named like a library so the installer extracts it with the rest).
     if [ -e "$ROOT/build/android/$abi/libturnipprobe.so" ]; then
         cp "$ROOT/build/android/$abi/libturnipprobe.so" "$OUT/pkg/lib/$abi/"
