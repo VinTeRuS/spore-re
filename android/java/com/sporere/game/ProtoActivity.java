@@ -69,8 +69,7 @@ public class ProtoActivity extends SDLActivity {
         }
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);  // no dimming while playing
-        // On-screen controls above SDL's surface; they feed SDL keyboard and mouse input.
-        addContentView(new TouchControls(this), new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        // Spore is played with the mouse: SDL turns one-finger touches into left-button mouse events. Prototype's
+        // on-screen buttons (TouchControls) stay off until Spore has its own (right drag, pinch zoom).
     }
 }
