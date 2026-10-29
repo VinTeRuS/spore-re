@@ -18,6 +18,7 @@
 #include <string>
 #include <map>
 #include <mutex>
+#include <vector>
 
 #include "guest.h"
 
@@ -105,7 +106,9 @@ constexpr uint32_t kMagic = 0x48454150u;  // "HEAP"
 constexpr uint32_t kLarge = 0xffffffffu;
 constexpr int kClasses = 40;
 uint32_t g_class_size[kClasses];
-uint32_t g_free_list[kClasses];
+// Free blocks per size class, kept on the host side: a guest write into freed memory (use after free, which the
+// Windows heap usually survives) cannot corrupt the allocator.
+std::vector<uint32_t> g_free_blocks[kClasses];
 uint32_t g_chunk_ptr = 0, g_chunk_end = 0;
 
 void InitClasses() {
@@ -194,9 +197,9 @@ uint32_t HeapAlloc(uint32_t size) {
         *Ptr<Header>(block) = {kLarge, size, kMagic, 0};
         return block + sizeof(Header);
     }
-    if (g_free_list[cls]) {
-        block = g_free_list[cls];
-        g_free_list[cls] = R32(block + sizeof(Header));
+    if (!g_free_blocks[cls].empty()) {
+        block = g_free_blocks[cls].back();
+        g_free_blocks[cls].pop_back();
     } else {
         uint32_t csize = g_class_size[cls];
         if (g_chunk_ptr + csize > g_chunk_end) {
@@ -226,8 +229,7 @@ void HeapFree(uint32_t addr) {
     }
     std::lock_guard<std::mutex> lock(g_mutex);
     h->magic = 0;
-    W32(addr, g_free_list[h->cls]);
-    g_free_list[h->cls] = block;
+    g_free_blocks[h->cls].push_back(block);
 }
 
 uint32_t HeapSize(uint32_t addr) {
