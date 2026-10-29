@@ -1,0 +1,11 @@
+LIBRARY d3dx9_27.dll
+EXPORTS
+    D3DXCompileShader=D3DXCompileShader@40
+    D3DXCheckVersion=d3dx9_27_real.D3DXCheckVersion
+    D3DXGetPixelShaderProfile=d3dx9_27_real.D3DXGetPixelShaderProfile
+    D3DXGetVertexShaderProfile=d3dx9_27_real.D3DXGetVertexShaderProfile
+    D3DXMatrixMultiply=d3dx9_27_real.D3DXMatrixMultiply
+    D3DXMatrixMultiplyTranspose=d3dx9_27_real.D3DXMatrixMultiplyTranspose
+    D3DXMatrixTranspose=d3dx9_27_real.D3DXMatrixTranspose
+    D3DXVec3Transform=d3dx9_27_real.D3DXVec3Transform
+    D3DXVec3TransformNormal=d3dx9_27_real.D3DXVec3TransformNormal
