@@ -211,6 +211,7 @@ std::vector<Grave> g_graves;
 uint32_t g_present_count = 0;
 }  // namespace
 std::atomic<uint64_t> g_frames{0};  // presented frames (watchdog, perf log)
+extern std::atomic<float> g_fps;  // main.cpp: frames per second over the last second
 namespace {
 constexpr uint32_t kGraveFrames = 3;
 
@@ -902,6 +903,9 @@ bool WaitForWindow(int seconds) {
     return false;
 }
 
+extern "C" JNIEXPORT jfloat JNICALL Java_com_sporere_game_SporeControls_nativeFps(JNIEnv*, jclass) {
+    return native::g_fps.load(std::memory_order_relaxed);
+}
 extern "C" JNIEXPORT void JNICALL Java_com_sporere_game_SporeSurface_nativeSurfaceGone(JNIEnv*, jclass) {
     std::lock_guard<std::mutex> lock(g_present_mutex);
     g_surface_gone = true;
@@ -984,6 +988,29 @@ M(IDirect3DQuery9, GetData) {
 M(IDirect3DDevice9, Present) {
     ++g_present_count;
     uint64_t frame = g_frames.fetch_add(1, std::memory_order_relaxed) + 1;  // the watchdog's frame counter (main.cpp)
+    // fps_limit (sporere.ini, the settings panel's presets): frames are paced to at most that rate, which keeps a
+    // phone cooler (and its clocks up longer) when the game would otherwise run unevenly above it.
+    {
+        static const int limit = SettingInt("fps_limit", 0);
+        static auto next = std::chrono::steady_clock::now();
+        if (limit > 0) {
+            auto now = std::chrono::steady_clock::now();
+            if (now < next) std::this_thread::sleep_until(next);
+            next = std::max(now, next) + std::chrono::microseconds(1000000 / limit);
+        }
+    }
+    // FPS over the last second, for the on-screen counter (SporeControls.nativeFps).
+    {
+        static auto window = std::chrono::steady_clock::now();
+        static uint64_t window_frame = 0;
+        auto now = std::chrono::steady_clock::now();
+        double secs = std::chrono::duration<double>(now - window).count();
+        if (secs >= 1.0) {
+            g_fps.store(float(double(frame - window_frame) / secs), std::memory_order_relaxed);
+            window = now;
+            window_frame = frame;
+        }
+    }
     // A perf line every 10 s: frames per second and the frame count it was measured at.
     {
         static auto last = std::chrono::steady_clock::now();

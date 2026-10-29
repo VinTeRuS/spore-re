@@ -75,8 +75,10 @@ public class SporeActivity extends SDLActivity {
         }
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);  // no dimming while playing
-        // Spore is played with the mouse: SDL turns one-finger touches into left-button mouse events (its own
-        // touch gestures for camera and zoom are still to come).
+        // Spore is played with the mouse: SporeControls turns touches into mouse input (tap, drag, long press,
+        // two-finger camera, pinch zoom) and adds Esc, keyboard, FPS and settings buttons.
+        addContentView(new SporeControls(this), new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         // The author's credit: on start, and small in a corner for the whole game (it lets touches through).
         Toast.makeText(this, SetupActivity.CREDIT, Toast.LENGTH_LONG).show();
         TextView mark = new TextView(this);
@@ -91,5 +93,10 @@ public class SporeActivity extends SDLActivity {
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.END);
         addContentView(mark, lp);
+    }
+
+    @Override
+    public void onBackPressed() {
+        SporeControls.onBack(this);  // the game's own menu / back, instead of leaving the app
     }
 }
