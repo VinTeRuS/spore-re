@@ -1,82 +1,99 @@
 #!/usr/bin/env python3
-"""Draws the launcher icon of the Android port (original artwork, no game assets or logos: a soft spiral galaxy in
-deep space with a single-celled organism in front of it, the journey from cell to space) and writes
-android/res/mipmap-*/ic_launcher.png, the adaptive icon layers and android/icon-512.png.
+"""Draws the launcher icon of the Android port: original artwork in a bright, playful cartoon style (no game assets,
+logos or characters from the game): a round glossy critter with eyes on stalks, a smile and spots, on a sky-blue to
+teal backdrop. Writes android/res/mipmap-*/ic_launcher.png, the adaptive icon layers and android/icon-512.png.
 
 Usage: tools/make_icon.py"""
 import math
 import os
-import random
 
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SIZES = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
-TEAL = (64, 214, 200)
-VIOLET = (150, 92, 230)
-CELL = (120, 236, 150)
+BODY = (255, 150, 40)        # warm orange critter
+BODY_DARK = (214, 92, 20)
+SPOT = (255, 210, 90)
+SKY_TOP = (90, 210, 255)
+SKY_BOTTOM = (20, 120, 170)
 
 
 def background(n):
-    """Deep space with stars and a two-armed spiral galaxy."""
-    img = Image.new("RGB", (n, n), (8, 10, 24))
-    rnd = random.Random(1948)
-    stars = ImageDraw.Draw(img)
-    for _ in range(n // 3):
-        x, y = rnd.uniform(0, n), rnd.uniform(0, n)
-        r = rnd.choice((1, 1, 1, 2)) * n / 1024
-        v = rnd.randint(120, 255)
-        stars.ellipse((x - r, y - r, x + r, y + r), fill=(v, v, min(255, v + 20)))
-    glow = Image.new("RGB", (n, n), (0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    cx = cy = n / 2
-    for arm in range(2):
-        for i in range(2400):
-            t = i / 2400 * 3.4 * math.pi
-            r = n * 0.04 + t * n * 0.034
-            a = t + arm * math.pi
-            x = cx + r * math.cos(a) + rnd.gauss(0, n * 0.012)
-            y = cy + r * math.sin(a) * 0.82 + rnd.gauss(0, n * 0.012)
-            mix = min(1.0, r / (n * 0.42))
-            col = tuple(int(TEAL[k] * (1 - mix) + VIOLET[k] * mix) for k in range(3))
-            s = n * 0.006 * (1.4 - mix)
-            gd.ellipse((x - s, y - s, x + s, y + s), fill=col)
-    core = n * 0.09
-    gd.ellipse((cx - core, cy - core, cx + core, cy + core), fill=(240, 236, 220))
-    glow = ImageEnhance.Brightness(glow.filter(ImageFilter.GaussianBlur(n * 0.010))).enhance(2.6)
-    sharp = ImageEnhance.Brightness(glow.filter(ImageFilter.GaussianBlur(n * 0.003))).enhance(1.2)
-    lit = Image.composite(glow, img, glow.convert("L"))
-    return Image.composite(sharp, lit, sharp.convert("L").point(lambda v: min(255, v * 2)))
+    """Vertical sky-blue gradient with a soft light from the upper left and a few bubbles."""
+    img = Image.new("RGB", (n, n))
+    px = img.load()
+    for y in range(n):
+        t = y / (n - 1)
+        row = tuple(int(SKY_TOP[k] * (1 - t) + SKY_BOTTOM[k] * t) for k in range(3))
+        for x in range(n):
+            px[x, y] = row
+    light = Image.new("L", (n, n), 0)
+    ImageDraw.Draw(light).ellipse((-n * 0.3, -n * 0.4, n * 0.7, n * 0.5), fill=110)
+    light = light.filter(ImageFilter.GaussianBlur(n * 0.12))
+    img = Image.composite(Image.new("RGB", (n, n), (230, 250, 255)), img, light)
+    d = ImageDraw.Draw(img, "RGBA")
+    for bx, by, br in ((0.14, 0.78, 0.05), (0.86, 0.24, 0.035), (0.82, 0.84, 0.025), (0.2, 0.2, 0.02)):
+        x, y, r = bx * n, by * n, br * n
+        d.ellipse((x - r, y - r, x + r, y + r), fill=(255, 255, 255, 60), outline=(255, 255, 255, 150),
+                  width=max(1, int(n * 0.004)))
+    return img
 
 
-def organism(n):
-    """A round cell with a translucent membrane, a nucleus, a few organelles and cilia (RGBA, transparent around)."""
+def eye(d, x, y, r, look):
+    d.ellipse((x - r, y - r, x + r, y + r), fill=(255, 255, 255), outline=(40, 30, 60), width=max(1, int(r * 0.12)))
+    pr = r * 0.48
+    px, py = x + look[0] * r * 0.32, y + look[1] * r * 0.32
+    d.ellipse((px - pr, py - pr, px + pr, py + pr), fill=(30, 24, 50))
+    hr = pr * 0.38
+    d.ellipse((px - pr * 0.35 - hr, py - pr * 0.4 - hr, px - pr * 0.35 + hr, py - pr * 0.4 + hr), fill=(255, 255, 255))
+
+
+def critter(n):
+    """The character on a transparent layer: body, belly, spots, stalk eyes, smile, little feet, gloss, shadow."""
     layer = Image.new("RGBA", (n, n), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
-    cx, cy, r = n * 0.5, n * 0.54, n * 0.2
-    for i in range(14):  # cilia
-        a = i / 14 * 2 * math.pi
-        x0, y0 = cx + r * math.cos(a), cy + r * math.sin(a)
-        bend = 0.35 * math.sin(i * 1.7)
-        x1, y1 = cx + r * 1.32 * math.cos(a + bend * 0.2), cy + r * 1.32 * math.sin(a + bend * 0.2)
-        d.line((x0, y0, x1, y1), fill=CELL + (200,), width=max(1, int(n * 0.012)))
-    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=CELL + (90,), outline=CELL + (255,), width=max(1, int(n * 0.016)))
-    nr = r * 0.38  # nucleus
-    d.ellipse((cx - nr * 0.6, cy - nr * 0.9, cx + nr * 1.4, cy + nr * 1.1), fill=(40, 120, 90, 230),
-              outline=(200, 255, 220, 255), width=max(1, int(n * 0.008)))
-    for ox, oy, s in ((-0.5, -0.35, 0.12), (-0.45, 0.4, 0.09), (0.55, -0.45, 0.08)):  # organelles
-        x, y, q = cx + ox * r, cy + oy * r, s * r
-        d.ellipse((x - q, y - q, x + q, y + q), fill=(220, 255, 230, 200))
-    halo = layer.filter(ImageFilter.GaussianBlur(n * 0.02))
+    cx, cy, rx, ry = n * 0.5, n * 0.6, n * 0.27, n * 0.23
+    w = max(1, int(n * 0.012))
+    # stalks and eyes behind the head line
+    for side, tilt in ((-1, -0.25), (1, 0.2)):
+        bx, by = cx + side * rx * 0.42, cy - ry * 0.8
+        ex, ey = bx + side * n * 0.07, by - n * 0.2
+        d.line((bx, by, (bx + ex) / 2 + side * n * 0.01, (by + ey) / 2, ex, ey), fill=BODY_DARK, width=int(n * 0.03),
+               joint="curve")
+        eye(d, ex, ey, n * 0.075, (0.4 * side + 0.2, 0.2 + tilt * 0.3))
+    # feet
+    for fx in (-0.5, 0.5):
+        x, y = cx + fx * rx, cy + ry * 0.92
+        d.ellipse((x - n * 0.06, y - n * 0.035, x + n * 0.06, y + n * 0.04), fill=BODY_DARK)
+    # body and belly
+    d.ellipse((cx - rx, cy - ry, cx + rx, cy + ry), fill=BODY, outline=BODY_DARK, width=w)
+    d.ellipse((cx - rx * 0.6, cy - ry * 0.05, cx + rx * 0.6, cy + ry * 0.85), fill=(255, 205, 140))
+    for sx, sy, sr in ((-0.62, -0.35, 0.11), (0.6, -0.45, 0.09), (0.75, 0.1, 0.07), (-0.8, 0.15, 0.06)):
+        x, y, r = cx + sx * rx, cy + sy * ry, sr * rx * 2
+        d.ellipse((x - r, y - r, x + r, y + r), fill=SPOT)
+    # smile
+    mw = rx * 0.55
+    d.arc((cx - mw, cy - ry * 0.35, cx + mw, cy + ry * 0.45), start=20, end=160, fill=(90, 30, 20),
+          width=int(n * 0.018))
+    # gloss on the upper left of the body
+    gloss = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    ImageDraw.Draw(gloss).ellipse((cx - rx * 0.75, cy - ry * 0.85, cx - rx * 0.1, cy - ry * 0.35),
+                                  fill=(255, 255, 255, 120))
+    gloss = gloss.filter(ImageFilter.GaussianBlur(n * 0.01))
+    layer.alpha_composite(gloss)
+    # soft ground shadow under everything
     out = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-    out.alpha_composite(halo)
+    shadow = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).ellipse((cx - rx * 1.05, cy + ry * 0.95, cx + rx * 1.05, cy + ry * 1.25),
+                                   fill=(0, 30, 50, 110))
+    out.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(n * 0.02)))
     out.alpha_composite(layer)
     return out
 
 
 def draw(n=1024, layers=False):
     bg = background(n)
-    fg = organism(n)
+    fg = critter(n)
     if layers:
         return bg, fg
     img = bg.convert("RGBA")
