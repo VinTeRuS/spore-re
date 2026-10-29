@@ -2,6 +2,7 @@
 #include <SDL2/SDL.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstring>
@@ -17,6 +18,8 @@ namespace native {
 
 std::string GuestFormat(const char* fmt, uint32_t args);  // msvcrt.cpp: printf with guest varargs
 void ForwardInput(const SDL_Event& e);  // input.cpp
+void InjectKey(SDL_Scancode sc, bool down);
+extern std::atomic<uint64_t> g_frames;  // d3d9.cpp: presented frames
 void InitInput();
 bool VkDown(uint32_t vk);
 extern SDL_Window* g_sdl_window;
@@ -193,8 +196,70 @@ bool IgnoreFocus() {
     return ignore;
 }
 
+// SPORERE_INPUT="<frame>:<SDL key name>,<frame>:click:<x>,<y>,...": scripted input for tests. A key is held for 5
+// frames; a click goes to client coordinates (left button down and up on consecutive frames).
+struct Scripted {
+    uint64_t frame;
+    SDL_Scancode key;
+    int x, y;  // click when key == SDL_SCANCODE_UNKNOWN
+};
+std::vector<Scripted> LoadScript() {
+    std::vector<Scripted> out;
+    const char* spec = getenv("SPORERE_INPUT");
+    if (!spec) return out;
+    std::string all(spec);
+    size_t pos = 0;
+    while (pos < all.size()) {
+        size_t colon = all.find(':', pos);
+        if (colon == std::string::npos) break;
+        uint64_t frame = strtoull(all.c_str() + pos, nullptr, 10);
+        if (all.compare(colon + 1, 6, "click:") == 0) {
+            int x = 0, y = 0;
+            sscanf(all.c_str() + colon + 7, "%d,%d", &x, &y);
+            out.push_back({frame, SDL_SCANCODE_UNKNOWN, x, y});
+            size_t comma = all.find(',', all.find(',', colon + 7) + 1);
+            pos = comma == std::string::npos ? all.size() : comma + 1;
+        } else {
+            size_t comma = all.find(',', colon);
+            std::string key = all.substr(colon + 1, comma == std::string::npos ? std::string::npos : comma - colon - 1);
+            out.push_back({frame, SDL_GetScancodeFromName(key.c_str()), 0, 0});
+            pos = comma == std::string::npos ? all.size() : comma + 1;
+        }
+    }
+    return out;
+}
+// While a scripted click runs, the cursor and the left button read back as the script sets them (GetCursorPos,
+// GetAsyncKeyState), not from the real mouse.
+struct { bool active = false, down = false; int x = 0, y = 0; } g_script_mouse;
+void RunScript() {
+    static std::vector<Scripted> script = LoadScript();
+    static uint64_t last = ~0ull;
+    if (script.empty()) return;
+    uint64_t frame = g_frames.load(std::memory_order_relaxed);
+    if (frame == last) return;
+    last = frame;
+    for (const Scripted& s : script) {
+        if (s.key != SDL_SCANCODE_UNKNOWN) {
+            if (frame == s.frame) InjectKey(s.key, true);
+            if (frame == s.frame + 5) InjectKey(s.key, false);
+        } else if (frame >= s.frame && frame <= s.frame + 30) {
+            // Hover first, press 10 frames later, release 10 frames after that (the UI reacts per frame).
+            uint32_t lp = uint32_t(s.y) << 16 | uint32_t(s.x & 0xffff);
+            g_script_mouse.active = true;
+            g_script_mouse.x = s.x;
+            g_script_mouse.y = s.y;
+            uint64_t t = frame - s.frame;
+            g_script_mouse.down = t >= 10 && t < 20;
+            if (t == 0 || t == 5) Post(kMainWindow, 0x0200, 0, lp);    // WM_MOUSEMOVE
+            if (t == 10) Post(kMainWindow, 0x0201, 1, lp);             // WM_LBUTTONDOWN
+            if (t == 20) Post(kMainWindow, 0x0202, 0, lp);             // WM_LBUTTONUP
+        }
+    }
+}
+
 // SDL events become posted messages; called from PeekMessage on the game's thread.
 void PumpSdl() {
+    RunScript();
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT || e.type == SDL_APP_TERMINATING) {
@@ -440,6 +505,7 @@ U(ScreenToClient) { Return(c, 1, 2); }
 U(GetCursorPos) {
     int x = 0, y = 0;
     SDL_GetMouseState(&x, &y);
+    if (g_script_mouse.active) x = g_script_mouse.x, y = g_script_mouse.y;
     W32(Arg(c, 0), uint32_t(x));
     W32(Arg(c, 0) + 4, uint32_t(y));
     Return(c, 1, 1);
@@ -556,8 +622,14 @@ U(IsClipboardFormatAvailable) { Return(c, 0, 1); }
 U(SetClipboardViewer) { Return(c, 0, 1); }
 U(ChangeClipboardChain) { Return(c, 0, 2); }
 // Key state for VK codes from SDL's keyboard (scancodes through input.cpp's table).
-U(GetKeyState) { Return(c, VkDown(Arg(c, 0)) ? 0xff80u : 0u, 1); }
-U(GetAsyncKeyState) { Return(c, VkDown(Arg(c, 0)) ? 0x8000u : 0u, 1); }
+U(GetKeyState) {
+    bool down = Arg(c, 0) == 1 && g_script_mouse.active ? g_script_mouse.down : VkDown(Arg(c, 0));
+    Return(c, down ? 0xff80u : 0u, 1);
+}
+U(GetAsyncKeyState) {
+    bool down = Arg(c, 0) == 1 && g_script_mouse.active ? g_script_mouse.down : VkDown(Arg(c, 0));
+    Return(c, down ? 0x8000u : 0u, 1);
+}
 U(GetKeyboardState) {
     for (uint32_t vk = 0; vk < 256; ++vk) W8(Arg(c, 0) + vk, VkDown(vk) ? 0x80 : 0);
     Return(c, 1, 1);
@@ -641,6 +713,10 @@ U(EnumDisplayDevicesA) {
     Return(c, 1, 4);
 }
 
+// TrackMouseEvent (looked up with GetProcAddress): accepted; the cursor never leaves a full-screen window, so
+// WM_MOUSELEAVE/WM_MOUSEHOVER never come.
+U(TrackMouseEvent) { Return(c, 1, 1); }
+
 #undef U
 
 #define E(name) {"user32.dll", #name, u_##name}
@@ -662,7 +738,7 @@ const ImportDef kUser32[] = {
     E(IsDlgButtonChecked), E(CheckDlgButton), E(OpenClipboard), E(CloseClipboard), E(EmptyClipboard),
     E(GetClipboardData), E(SetClipboardData), E(IsClipboardFormatAvailable), E(SetClipboardViewer),
     E(ChangeClipboardChain), E(GetKeyState), E(GetAsyncKeyState), E(GetKeyboardState), E(wsprintfW),
-    E(EnumDisplayDevicesA),
+    E(EnumDisplayDevicesA), E(TrackMouseEvent),
     {"user32.dll", "SetWindowLongW", u_SetWindowLongA}, {"user32.dll", "GetWindowLongW", u_GetWindowLongA},
 };
 #undef E

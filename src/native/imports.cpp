@@ -142,7 +142,7 @@ bool DispatchImport(Ctx* ctx, uint32_t target) {
     static const char* trace_env = getenv("SPORERE_TRACE_IMPORTS");
     static const auto trace_from = std::chrono::steady_clock::now() + std::chrono::seconds(trace_env ? atoi(trace_env) : 0);
     if (trace_env && std::chrono::steady_clock::now() >= trace_from)
-        Log("import %s!%s from %08x", s.dll.c_str(), s.name.c_str(), R32(ctx->esp));
+        Log("import %s!%s from %08x arg0 %08x", s.dll.c_str(), s.name.c_str(), R32(ctx->esp), Arg(ctx, 0));
     if (ImportProfiling() && s.name != "SwitchToFiber") {  // a fiber switch does not return until switched back
         ProfiledCall(s, index, ctx);
     } else {
