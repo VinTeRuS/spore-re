@@ -291,6 +291,30 @@ int main(int argc, char** argv) {
 #endif
     // The game root: the folder with SporebinEP1/, Data/, DataEP1/ (C:\Game for the guest).
     g_game_dir = argc > 1 ? argv[1] : getenv("SPORERE_GAME");
+#ifdef __ANDROID__
+    // Logs, sporere.ini, saves (native_c) and the DXVK caches live in the app's external files folder
+    // (/sdcard/Android/data/com.sporere.game/files); the game is <that folder>/game unless SetupActivity found it
+    // elsewhere (SPORERE_GAME).
+    static std::string android_game;
+    const char* base = SDL_AndroidGetExternalStoragePath();
+    if (!base) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, kCredit, SDL_GetError(), nullptr);
+        return 1;
+    }
+    if (chdir(base) != 0) return 1;
+    g_data_dir = base;
+    setenv("DXVK_STATE_CACHE_PATH", base, 0);
+    setenv("DXVK_LOG_PATH", base, 0);
+    if (!g_game_dir) {
+        android_game = std::string(base) + "/game";
+        g_game_dir = android_game.c_str();
+    }
+    if (std::string exe = std::string(g_game_dir) + "/SporebinEP1/SporeApp.exe"; access(exe.c_str(), R_OK) != 0) {
+        std::string msg = "Cannot read " + exe + " (" + strerror(errno) + ").\nCopy the game files there.";
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, kCredit, msg.c_str(), nullptr);
+        return 1;
+    }
+#endif
     if (!g_game_dir) {
         fprintf(stderr, "usage: %s <game directory>\n", argv[0]);
         return 2;
@@ -323,6 +347,13 @@ int main(int argc, char** argv) {
     if (!g_sdl_window) Fatal("SDL_CreateWindow: %s", SDL_GetError());
     int window_w, window_h;
     SDL_GetWindowSize(g_sdl_window, &window_w, &window_h);
+#ifdef __ANDROID__
+    SDL_DisplayMode mode;  // the window becomes the whole screen; its size is not known yet
+    if (SDL_GetDesktopDisplayMode(0, &mode) == 0) {
+        window_w = mode.w > mode.h ? mode.w : mode.h;  // landscape
+        window_h = mode.w > mode.h ? mode.h : mode.w;
+    }
+#endif
     InitClientSize(window_w, window_h);
 
     std::string exe = std::string(g_game_dir) + "/SporebinEP1/SporeApp.exe";
