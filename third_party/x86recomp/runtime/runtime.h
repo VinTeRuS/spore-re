@@ -197,6 +197,9 @@ static inline uint32_t Mask(int bits) { return bits == 32 ? 0xffffffffu : ((1u <
 static inline XmmValue RecompLoad128(uint32_t a) { XmmValue v; memcpy(&v, G(a), 16); return v; }
 static inline void RecompStore128(uint32_t a, XmmValue v) { memcpy(G(a), &v, 16); }
 
+/* Natural alignment of a guest address on the host (for every build, TSO or not). */
+#define RECOMP_IS_ALIGNED(a, n) ((((uintptr_t)G(a)) & ((n) - 1)) == 0)
+
 /* Locked operations at any alignment. x86 allows them on misaligned addresses; ARM's atomic instructions fault there
  * (SIGBUS). Aligned ones use the host atomics; misaligned ones take a spinlock from one table keyed by the address
  * (defined once by the host, RecompMisalignedLocks), so they stay atomic against each other. */
@@ -211,7 +214,7 @@ enum { RECOMP_RMW_ADD, RECOMP_RMW_SUB, RECOMP_RMW_OR, RECOMP_RMW_AND, RECOMP_RMW
 /* Returns the old value. */
 static inline uint32_t RecompRmw32(uint32_t a, int kind, uint32_t b) {
     uint32_t* p = (uint32_t*)G(a);
-    if (RECOMP_ALIGNED(a, 4)) {
+    if (RECOMP_IS_ALIGNED(a, 4)) {
         switch (kind) {
             case RECOMP_RMW_ADD: return __atomic_fetch_add(p, b, __ATOMIC_SEQ_CST);
             case RECOMP_RMW_SUB: return __atomic_fetch_sub(p, b, __ATOMIC_SEQ_CST);
@@ -238,7 +241,7 @@ static inline uint32_t RecompRmw32(uint32_t a, int kind, uint32_t b) {
 }
 static inline uint32_t RecompCas32(uint32_t a, uint32_t expected, uint32_t desired) {
     uint32_t* p = (uint32_t*)G(a);
-    if (RECOMP_ALIGNED(a, 4)) return __sync_val_compare_and_swap(p, expected, desired);
+    if (RECOMP_IS_ALIGNED(a, 4)) return __sync_val_compare_and_swap(p, expected, desired);
     RecompLockAddr(a);
     uint32_t old;
     memcpy(&old, p, 4);
@@ -248,7 +251,7 @@ static inline uint32_t RecompCas32(uint32_t a, uint32_t expected, uint32_t desir
 }
 static inline uint64_t RecompCas64(uint32_t a, uint64_t expected, uint64_t desired) {
     uint64_t* p = (uint64_t*)G(a);
-    if (RECOMP_ALIGNED(a, 8)) return __sync_val_compare_and_swap(p, expected, desired);
+    if (RECOMP_IS_ALIGNED(a, 8)) return __sync_val_compare_and_swap(p, expected, desired);
     RecompLockAddr(a);
     uint64_t old;
     memcpy(&old, p, 8);
