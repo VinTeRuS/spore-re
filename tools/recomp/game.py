@@ -13,4 +13,7 @@ SETJMP_IAT = {0x013cc440}
 LONGJMP_IAT = {0x013cc430}
 INLINE_HELPERS = {0x011e0720: "allshl", 0x011e0740: "chkstk", 0x011e0886: "ftol2", 0x011e0910: "aullshr",
                   0x011e0ad0: "allmul", 0x011e0cc0: "chkstk16", 0x011e0cd6: "chkstk8"}
+# MSVCR90 memset/memcpy/memmove IAT slots: done in place at the call sites (the game calls them through the import
+# thunks a few hundred thousand times a second while loading).
+INLINE_IMPORTS = {0x013cc478: "memset", 0x013cc47c: "memcpy", 0x013cc480: "memmove"}
 NATIVE_OVERRIDES = set()

@@ -199,16 +199,16 @@ static long ResidentMiB() {
 }  // namespace native
 
 #ifdef __ANDROID__
-extern "C" JNIEXPORT jfloat JNICALL Java_com_protore_game_TouchControls_nativeFps(JNIEnv*, jclass) {
+extern "C" JNIEXPORT jfloat JNICALL Java_com_sporere_game_TouchControls_nativeFps(JNIEnv*, jclass) {
     return native::g_fps.load();
 }
-extern "C" JNIEXPORT jfloat JNICALL Java_com_protore_game_TouchControls_nativeFrameMs(JNIEnv*, jclass) {
+extern "C" JNIEXPORT jfloat JNICALL Java_com_sporere_game_TouchControls_nativeFrameMs(JNIEnv*, jclass) {
     return native::g_frame_ms.load();
 }
-extern "C" JNIEXPORT jint JNICALL Java_com_protore_game_TouchControls_nativeMemoryMiB(JNIEnv*, jclass) {
+extern "C" JNIEXPORT jint JNICALL Java_com_sporere_game_TouchControls_nativeMemoryMiB(JNIEnv*, jclass) {
     return jint(native::ResidentMiB());
 }
-extern "C" JNIEXPORT void JNICALL Java_com_protore_game_TouchControls_nativeSetFpsLimit(JNIEnv*, jclass, jint fps) {
+extern "C" JNIEXPORT void JNICALL Java_com_sporere_game_TouchControls_nativeSetFpsLimit(JNIEnv*, jclass, jint fps) {
     native::g_fps_limit.store(fps);
     native::PerfHintTarget(fps);
 }
@@ -250,7 +250,7 @@ static void PinToBigCores() {
 using namespace native;
 
 #ifdef __ANDROID__
-// DXVK and FAudio report errors on stderr, which goes nowhere in an app: forward it to logcat (tag protore-err).
+// DXVK and FAudio report errors on stderr, which goes nowhere in an app: forward it to logcat (tag sporere-err).
 static void RedirectStderrToLogcat() {
     static int fds[2];
     if (pipe(fds) != 0) return;

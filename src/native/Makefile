@@ -43,9 +43,9 @@ LDFLAGS := -shared -Wl,-Bsymbolic -static-libstdc++ -Wl,--no-undefined -L$(DEPS)
 # Adreno: Turnip and libadrenotools from android/build-turnip.sh (arm64 only; built without them otherwise).
 TURNIP ?= $(HOME)/proto-re-data/android-turnip
 ifneq ($(and $(filter arm64-v8a,$(ABI)),$(wildcard $(TURNIP)/lib/libadrenotools.a)),)
-DEP_INCLUDES += -I$(TURNIP)/include -DPROTORE_ADRENOTOOLS
+DEP_INCLUDES += -I$(TURNIP)/include -DSPORERE_ADRENOTOOLS
 LDFLAGS += -L$(TURNIP)/lib -ladrenotools -llinkernsbypass -ldl \
-           -Wl,--defsym=android_get_device_api_level=protore_device_api_level
+           -Wl,--defsym=android_get_device_api_level=sporere_device_api_level
 # The driver probe program (turnip_probe.cpp): API 29 like libadrenotools, plain ARMv8.0 so one build runs on all.
 EXTRA := $(OUT)/libturnipprobe.so
 endif

@@ -802,10 +802,10 @@ M(IDirect3DDevice9, Reset) {
     ToGuest(pp, Arg(c, 1));
     Return(c, uint32_t(hr), 2);
 }
-// Setting shot=<frame>[,<frame>...] (PROTORE_SHOT): the back buffer of those presents is saved as shot_<frame>.ppm in
+// Setting shot=<frame>[,<frame>...] (SPORERE_SHOT): the back buffer of those presents is saved as shot_<frame>.ppm in
 // the working directory (debugging without a desktop screenshot tool; on Android only the game's own frame).
 void MaybeScreenshot(IDirect3DDevice9* dev) {
-    static const std::string spec_setting = Setting("shot", "");  // protore.ini `shot = ...` works on Android
+    static const std::string spec_setting = Setting("shot", "");  // sporere.ini `shot = ...` works on Android
     static const char* spec = spec_setting.empty() ? nullptr : spec_setting.c_str();
     static uint32_t frame = 0;
     ++frame;
@@ -884,11 +884,11 @@ bool WaitForWindow(int seconds) {
     return false;
 }
 
-extern "C" JNIEXPORT void JNICALL Java_com_protore_game_ProtoSurface_nativeSurfaceGone(JNIEnv*, jclass) {
+extern "C" JNIEXPORT void JNICALL Java_com_sporere_game_ProtoSurface_nativeSurfaceGone(JNIEnv*, jclass) {
     std::lock_guard<std::mutex> lock(g_present_mutex);
     g_surface_gone = true;
 }
-extern "C" JNIEXPORT void JNICALL Java_com_protore_game_ProtoSurface_nativeSurfaceReady(JNIEnv*, jclass) {
+extern "C" JNIEXPORT void JNICALL Java_com_sporere_game_ProtoSurface_nativeSurfaceReady(JNIEnv*, jclass) {
     std::lock_guard<std::mutex> lock(g_present_mutex);
     g_surface_gone = false;
 }
