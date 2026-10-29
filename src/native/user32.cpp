@@ -480,7 +480,9 @@ U(UpdateWindow) { Return(c, 1, 1); }
 U(SetWindowPos) { Return(c, 1, 7); }
 U(MoveWindow) { Return(c, 1, 6); }
 U(SetWindowTextW) {
-    if (Arg(c, 0) == kMainWindow) SDL_SetWindowTitle(g_sdl_window, WideToUtf8(Arg(c, 1)).c_str());
+    // The game's own title, with the port's credit after it.
+    if (Arg(c, 0) == kMainWindow)
+        SDL_SetWindowTitle(g_sdl_window, (WideToUtf8(Arg(c, 1)) + " - port by VinTeRuS").c_str());
     Return(c, 1, 2);
 }
 U(SetFocus) { Return(c, kMainWindow, 1); }

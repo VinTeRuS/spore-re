@@ -33,8 +33,9 @@ import java.io.OutputStream;
  */
 public class SetupActivity extends Activity {
     /** Shown on the setup screen and in the in-game settings panel. */
-    static final String CREDIT = "Android port by VinTeRuS";
-    static final String CREDIT_URL = "github.com/VinTeRuS/proto-re";
+    // The native library checks CREDIT (ProtoActivity hands it over): a build without it does not start.
+    static final String CREDIT = "Spore Android port by VinTeRuS";
+    static final String CREDIT_URL = "patreon.com/cw/VinTeRuS";
     static final String SUPPORT_URL = "https://www.patreon.com/cw/VinTeRuS/membership";
 
     /** Opens the author's Patreon page in the browser. */

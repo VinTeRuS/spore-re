@@ -273,10 +273,21 @@ static void RedirectStderrToLogcat() {
 }
 #endif
 
+// The port's credit. On Android the Java side hands over its own copy (SetupActivity.CREDIT); a build where either
+// was removed or changed does not start.
+constexpr const char* kCredit = "Spore Android port by VinTeRuS";
+
 int main(int argc, char** argv) {
 #ifdef __ANDROID__
     RedirectStderrToLogcat();
     setenv("DXVK_LOG_LEVEL", "info", 0);
+    if (const char* credit = getenv("SPORERE_CREDIT"); !credit || strcmp(credit, kCredit) != 0) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, kCredit,
+                                 "This build of the Spore Android port was modified: the author's credit is missing.\n"
+                                 "The port is made by VinTeRuS - patreon.com/cw/VinTeRuS",
+                                 nullptr);
+        return 1;
+    }
 #endif
     // The game root: the folder with SporebinEP1/, Data/, DataEP1/ (C:\Game for the guest).
     g_game_dir = argc > 1 ? argv[1] : getenv("SPORERE_GAME");
@@ -287,7 +298,7 @@ int main(int argc, char** argv) {
     rename("spore-native.log", "spore-native.prev.log");  // the previous run's log survives one restart
     g_log = fopen("spore-native.log", "w");
     InstallCrashHandler();
-    Log("spore-re build %s %s", __DATE__, __TIME__);
+    Log("%s - build %s %s", kCredit, __DATE__, __TIME__);
     InitGuestMemory();
     GuestThread* main_thread = AttachThread(1u << 20);  // the exe's SizeOfStackReserve
     InitD3D9Bridge();
@@ -303,7 +314,7 @@ int main(int argc, char** argv) {
 #endif
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) Fatal("SDL_Init: %s", SDL_GetError());
     // The window exists before the game asks for one: CreateWindowExW hands out this one (user32.cpp).
-    g_sdl_window = SDL_CreateWindow("Spore", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720,
+    g_sdl_window = SDL_CreateWindow("Spore - port by VinTeRuS", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720,
                                     SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE
 #ifdef __ANDROID__
                                         | SDL_WINDOW_FULLSCREEN

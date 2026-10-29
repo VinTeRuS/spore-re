@@ -1,4 +1,4 @@
-# Prototype port settings. Copy to sporere.ini next to the game/ folder
+# Spore Android port by VinTeRuS - settings. Copy to sporere.ini next to the game/ folder
 # (Android: /sdcard/Android/data/com.sporere.game/files/sporere.ini; desktop: the working directory).
 # Any key can also be set as an environment variable SPORERE_<KEY>, e.g. SPORERE_RENDER_HEIGHT=540.
 

@@ -5,6 +5,11 @@ import android.os.Bundle;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.view.ViewGroup;
+import android.view.Gravity;
+import android.util.TypedValue;
+import android.widget.FrameLayout;
+import android.widget.TextView;
+import android.widget.Toast;
 import android.view.WindowManager;
 
 import java.io.BufferedReader;
@@ -64,6 +69,7 @@ public class ProtoActivity extends SDLActivity {
         // The native side loads the bundled Vulkan driver (Turnip, on Adreno) from the extracted libraries.
         try {
             Os.setenv("SPORERE_NATIVE_LIB_DIR", getApplicationInfo().nativeLibraryDir, true);
+            Os.setenv("SPORERE_CREDIT", SetupActivity.CREDIT, true);
         } catch (ErrnoException ignored) {
             // the system Vulkan driver is used
         }
@@ -71,5 +77,19 @@ public class ProtoActivity extends SDLActivity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);  // no dimming while playing
         // Spore is played with the mouse: SDL turns one-finger touches into left-button mouse events. Prototype's
         // on-screen buttons (TouchControls) stay off until Spore has its own (right drag, pinch zoom).
+        // The author's credit: on start, and small in a corner for the whole game (it lets touches through).
+        Toast.makeText(this, SetupActivity.CREDIT, Toast.LENGTH_LONG).show();
+        TextView mark = new TextView(this);
+        mark.setText(SetupActivity.CREDIT);
+        mark.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+        mark.setTextColor(0x99ffffff);
+        mark.setShadowLayer(3, 1, 1, 0xcc000000);
+        mark.setClickable(false);
+        mark.setFocusable(false);
+        int pad = (int) (6 * getResources().getDisplayMetrics().density);
+        mark.setPadding(pad, pad, pad, pad);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.END);
+        addContentView(mark, lp);
     }
 }

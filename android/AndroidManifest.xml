@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Prototype native port. The APK contains only the port's code and open-source libraries; the game files are
-     copied by the user to /sdcard/Android/data/com.sporere.game/files/game or /sdcard/Prototype (SetupActivity). -->
+<!-- Spore native Android port by VinTeRuS. The APK contains only the port's code and open-source libraries; the game files are
+     copied by the user to /sdcard/Android/data/com.sporere.game/files/game or /sdcard/Spore (SetupActivity). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.sporere.game"
     android:versionCode="1"
@@ -14,12 +14,12 @@
     <uses-feature android:name="android.hardware.type.pc" android:required="false" />
 
     <uses-permission android:name="android.permission.VIBRATE" />
-    <!-- Only for a game folder in shared storage (/sdcard/Prototype); asked for on the setup screen. -->
+    <!-- Only for a game folder in shared storage (/sdcard/Spore); asked for on the setup screen. -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <application
-        android:label="Spore"
+        android:label="Spore · VinTeRuS"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:hasCode="true"
@@ -30,13 +30,14 @@
         android:requestLegacyExternalStorage="true"
         android:isGame="true"
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+        <meta-data android:name="port.author" android:value="VinTeRuS" />
 
         <!-- profiling with simpleperf without root -->
         <profileable android:shell="true" />
 
         <activity
             android:name="com.sporere.game.SetupActivity"
-            android:label="Spore"
+            android:label="Spore · VinTeRuS"
             android:exported="true"
             android:screenOrientation="sensorLandscape"
             android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
@@ -48,7 +49,7 @@
 
         <activity
             android:name="com.sporere.game.ProtoActivity"
-            android:label="Spore"
+            android:label="Spore · VinTeRuS"
             android:exported="false"
             android:screenOrientation="sensorLandscape"
             android:alwaysRetainTaskState="true"
