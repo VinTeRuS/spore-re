@@ -688,6 +688,12 @@ class FunctionCompiler:
             return f"{{ uint32_t v = {self.read(ins, ops[0])}; Push32(c, v); }}"
         if base == "pop":
             return "{ uint32_t v = Pop32(c); " + self.write(ins, ops[0], "v") + " }"
+        if base == "pushal":
+            return ("{ uint32_t s = c->esp; Push32(c, c->eax); Push32(c, c->ecx); Push32(c, c->edx); Push32(c, c->ebx); "
+                    "Push32(c, s); Push32(c, c->ebp); Push32(c, c->esi); Push32(c, c->edi); }")
+        if base == "popal":  # the saved esp is skipped, as on hardware
+            return ("{ c->edi = Pop32(c); c->esi = Pop32(c); c->ebp = Pop32(c); (void)Pop32(c); c->ebx = Pop32(c); "
+                    "c->edx = Pop32(c); c->ecx = Pop32(c); c->eax = Pop32(c); }")
         if base in ("add", "sub", "adc", "sbb", "cmp"):
             a = self.read(ins, ops[0], bits)
             b = self.read(ins, ops[1], bits)
@@ -821,6 +827,8 @@ class FunctionCompiler:
             return f"if ({COND[base[1:]]}) {{ {self.jump_to(ops[0].imm)} }}"
         if base in ("jecxz",):
             return f"if (c->ecx == 0) {{ {self.jump_to(ops[0].imm)} }}"
+        if base == "jcxz":
+            return f"if ((c->ecx & 0xffffu) == 0) {{ {self.jump_to(ops[0].imm)} }}"
         if base == "jmp":
             if ops[0].type == X.X86_OP_IMM:
                 return self.jump_to(ops[0].imm)
@@ -902,7 +910,7 @@ class FunctionCompiler:
         if ops_are_xmm(ins) or base in SSE_MNEMONICS:
             return self.sse(ins, base)
         # ---- x87 ----
-        if base.startswith("f") or base in ("lahf", "sahf"):
+        if (base.startswith("f") and base != "fxsave") or base in ("lahf", "sahf"):
             return self.x87(ins, base)
         # ---- remaining integer instructions ----
         if base in ("shld", "shrd"):
@@ -961,6 +969,13 @@ class FunctionCompiler:
             return f"W32({self.address(ins, ops[0])}, c->mxcsr ? c->mxcsr : 0x1f80u);"
         if base == "ldmxcsr":
             return f"c->mxcsr = R32({self.address(ins, ops[0])});"
+        if base == "fxsave":
+            # FXSAVE layout: control/status words, MXCSR (+ mask), st(i) as 80-bit values, xmm registers.
+            a = self.address(ins, ops[0])
+            return (f"{{ uint32_t a = {a}; memset(G(a), 0, 512); W16(a, c->fpu_cw); W16(a + 2u, X87StatusWord(c)); "
+                    f"W32(a + 24u, c->mxcsr ? c->mxcsr : 0x1f80u); W32(a + 28u, 0xffffu); "
+                    f"for (int k = 0; k < 8; ++k) RecompStoreF80(a + 32u + 16u * (uint32_t)k, X87(c, k)); "
+                    f"for (int k = 0; k < 8; ++k) RecompStore128(a + 160u + 16u * (uint32_t)k, c->xmm[k]); }}")
         if base == "in":
             return f'RecompUnimplemented(c, 0x{ins.address:08x}u, "port input"); return;'
         if base == "cwde":
