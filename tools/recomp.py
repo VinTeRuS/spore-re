@@ -927,8 +927,8 @@ class FunctionCompiler:
             if ops[0].type == X.X86_OP_MEM:
                 addr = self.address(ins, ops[0])
                 src = self.read(ins, ops[1])
-                return ("{ uint32_t expected = c->eax; uint32_t* p = (uint32_t*)G(" + addr + "); "
-                        "uint32_t old = __sync_val_compare_and_swap(p, expected, " + src + "); "
+                return ("{ uint32_t expected = c->eax; "
+                        "uint32_t old = RecompCas32(" + addr + ", expected, " + src + "); "
                         "(void)SubFlags(c, expected, old, 0, 32); if (!c->zf) c->eax = old; }")
             raise Unsupported("cmpxchg reg")
         if base == "cld":
@@ -985,7 +985,7 @@ class FunctionCompiler:
         if base == "cmpxchg8b":
             a = self.address(ins, ops[0])
             return ("{ uint64_t expected = ((uint64_t)c->edx << 32) | c->eax; uint64_t desired = ((uint64_t)c->ecx << 32) | c->ebx; "
-                    "uint64_t old = __sync_val_compare_and_swap((uint64_t*)G(" + a + "), expected, desired); "
+                    "uint64_t old = RecompCas64(" + a + ", expected, desired); "
                     "c->zf = old == expected; if (!c->zf) { c->eax = (uint32_t)old; c->edx = (uint32_t)(old >> 32); } }")
         if base == "pushfd":
             return "Push32(c, RecompEflags(c));"
@@ -1032,30 +1032,31 @@ class FunctionCompiler:
                 return ("{ uint32_t a = " + a + ", b = " + b + "; uint32_t r = AddFlags(c, a, b, 0, 32); "
                         + self.write(ins, ops[1], "a") + " " + self.write(ins, ops[0], "r") + " }")
             raise Unsupported(f"lock {base} {bits}-bit")
-        p = f"(uint32_t*)G({self.address(ins, ops[0])})"
+        # RecompRmw32 (runtime.h): host atomics when aligned, an address-keyed lock when not (ARM faults there).
+        a = self.address(ins, ops[0])
+        rmw = lambda kind, b: f"RecompRmw32({a}, RECOMP_RMW_{kind}, {b})"
         if base == "xadd":
             src = self.read(ins, ops[1])
-            return ("{ uint32_t b = " + src + "; uint32_t old = __sync_fetch_and_add(" + p + ", b); "
+            return ("{ uint32_t b = " + src + "; uint32_t old = " + rmw("ADD", "b") + "; "
                     "(void)AddFlags(c, old, b, 0, 32); " + self.write(ins, ops[1], "old") + " }")
         if base in ("inc", "dec"):
-            fn = "__sync_fetch_and_add" if base == "inc" else "__sync_fetch_and_sub"
+            kind = "ADD" if base == "inc" else "SUB"
             flags = "AddFlags" if base == "inc" else "SubFlags"
-            return ("{ uint8_t cf = c->cf; uint32_t old = " + fn + "(" + p + ", 1u); (void)" + flags
+            return ("{ uint8_t cf = c->cf; uint32_t old = " + rmw(kind, "1u") + "; (void)" + flags
                     + "(c, old, 1u, 0, 32); c->cf = cf; }")
         if base in ("add", "sub"):
             v = self.read(ins, ops[1], 32)
-            fn = "__sync_fetch_and_add" if base == "add" else "__sync_fetch_and_sub"
+            kind = "ADD" if base == "add" else "SUB"
             flags = "AddFlags" if base == "add" else "SubFlags"
-            return "{ uint32_t b = " + v + "; uint32_t old = " + fn + "(" + p + ", b); (void)" + flags + "(c, old, b, 0, 32); }"
+            return "{ uint32_t b = " + v + "; uint32_t old = " + rmw(kind, "b") + "; (void)" + flags + "(c, old, b, 0, 32); }"
         if base in ("or", "and", "xor"):
             v = self.read(ins, ops[1], 32)
-            fn = {"or": "__sync_fetch_and_or", "and": "__sync_fetch_and_and", "xor": "__sync_fetch_and_xor"}[base]
             op = {"or": "|", "and": "&", "xor": "^"}[base]
-            return ("{ uint32_t b = " + v + "; uint32_t old = " + fn + "(" + p + ", b); uint32_t r = old " + op
+            return ("{ uint32_t b = " + v + "; uint32_t old = " + rmw(base.upper(), "b") + "; uint32_t r = old " + op
                     + " b; RECOMP_FLAGS_LOGIC(c, r, 32); }")
         if base == "xchg":
             v = self.read(ins, ops[1], 32)
-            return "{ uint32_t old = __sync_lock_test_and_set(" + p + ", " + v + "); " + self.write(ins, ops[1], "old") + " }"
+            return "{ uint32_t old = " + rmw("XCHG", v) + "; " + self.write(ins, ops[1], "old") + " }"
         raise Unsupported(f"lock {base}")
 
     # ---- SSE ----
