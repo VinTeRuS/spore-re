@@ -168,6 +168,9 @@ struct Grave {
 };
 std::vector<Grave> g_graves;
 uint32_t g_present_count = 0;
+}  // namespace
+std::atomic<uint64_t> g_frames{0};  // presented frames (watchdog, perf log)
+namespace {
 constexpr uint32_t kGraveFrames = 3;
 
 ULONG RefCount(IUnknown* p) {
@@ -869,6 +872,7 @@ bool WaitForWindow(int) { return true; }
 
 M(IDirect3DDevice9, Present) {
     ++g_present_count;
+    g_frames.fetch_add(1, std::memory_order_relaxed);  // the watchdog's frame counter (main.cpp)
     if (!g_graves.empty()) DrainGraves(false);
     auto* dev = Host<IDirect3DDevice9>(Arg(c, 0));
     MaybeScreenshot(dev);

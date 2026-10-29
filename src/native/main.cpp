@@ -171,6 +171,7 @@ void Fatal(const char* fmt, ...) {
 uint32_t HostWindow();  // user32.cpp
 void InitClientSize(int window_w, int window_h);
 void StartWatchdog(std::atomic<uint64_t>* frames);  // watchdog.cpp
+extern std::atomic<uint64_t> g_frames;  // d3d9.cpp
 void InitD3D9Bridge();  // d3d9.cpp
 void SelectVulkanDriver();  // vulkan_driver.cpp
 void VulkanDriverConfirm();
@@ -319,8 +320,7 @@ int main(int argc, char** argv) {
     g_engine_hi = g_engine.base + g_engine.size;
     SetupStaticTls(main_thread);  // the main thread was attached before the exe (and its TLS template) existed
 
-    static std::atomic<uint64_t> frames{0};
-    StartWatchdog(&frames);
+    StartWatchdog(&g_frames);  // counted by Present (d3d9.cpp)
     // TLS callbacks (DLL_PROCESS_ATTACH), as the Windows loader runs them before the entry point.
     for (uint32_t cb = g_static_tls.callbacks; cb && R32(cb); cb += 4) {
         Log("TLS callback %08x", R32(cb));
