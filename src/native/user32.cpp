@@ -33,6 +33,16 @@ std::map<std::pair<uint32_t, int32_t>, uint32_t> g_window_longs;
 std::map<std::string, uint32_t> g_classes;  // class name -> WNDPROC
 std::map<uint32_t, uint32_t> g_window_proc;
 
+// Window classes are found by name or by the atom RegisterClass returned ("#<atom>", as CreateWindowEx gets
+// MAKEINTATOM(atom)); both keys point at the same WNDPROC. Called with g_mutex held.
+uint32_t g_next_atom = 0xc001u;
+uint32_t AddClass(const std::string& name, uint32_t proc) {
+    uint32_t atom = g_next_atom++;
+    g_classes[name] = proc;
+    g_classes["#" + std::to_string(atom)] = proc;
+    return atom;
+}
+
 #define U(name) void u_##name(Ctx* c)
 
 U(GetDesktopWindow) { Return(c, kDesktopWindow); }
@@ -82,8 +92,7 @@ U(RegisterClassExA) {
     uint32_t name = R32(wc + 40);
     std::lock_guard<std::mutex> lock(g_mutex);
     std::string n = name < 0x10000 ? "#" + std::to_string(name) : std::string(Str(name));
-    g_classes[n] = R32(wc + 8);
-    Return(c, 0xc000u + uint32_t(g_classes.size()), 1);
+    Return(c, AddClass(n, R32(wc + 8)), 1);
 }
 U(UnregisterClassA) { Return(c, 1, 2); }
 U(CreateWindowExA) {
@@ -143,6 +152,18 @@ struct Timer {
     std::chrono::steady_clock::time_point due;
 };
 std::vector<Timer> g_timers;  // under g_mutex
+// Windows with an invalid region (InvalidateRect): PeekMessage hands out WM_PAINT for them when nothing else is
+// queued, until BeginPaint/ValidateRect (or the dispatch, see DispatchMessageW) validates. Spore draws its frames
+// from WM_PAINT and invalidates the window on every tick.
+std::map<uint32_t, bool> g_paint_pending;  // under g_mutex
+void SetPaintPending(uint32_t hwnd, bool pending) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_paint_pending[hwnd ? hwnd : kMainWindow] = pending;
+}
+// SPORERE_TRACE_MESSAGES=1: a histogram of dispatched messages every 5000 dispatches, and the PeekMessage calls.
+const bool g_trace_messages = getenv("SPORERE_TRACE_MESSAGES") != nullptr;
+std::map<uint32_t, uint32_t> g_msg_counts;
+uint64_t g_peeks = 0, g_peek_hits = 0;
 std::map<uint32_t, uint32_t> g_window_parent;
 
 // Class and window names: an atom, or a UTF-16 string (win.h WideToUtf8).
@@ -165,6 +186,13 @@ void Post(uint32_t hwnd, uint32_t msg, uint32_t wparam, uint32_t lparam) {
     g_queue.push_back({hwnd, msg, wparam, lparam});
 }
 
+// ignore_focus = 1 (SPORERE_IGNORE_FOCUS): the game never hears that its window lost focus, so it keeps running in
+// the background (tests on a desktop that is in use; Spore pauses while inactive).
+bool IgnoreFocus() {
+    static const bool ignore = SettingInt("ignore_focus", 0) != 0;
+    return ignore;
+}
+
 // SDL events become posted messages; called from PeekMessage on the game's thread.
 void PumpSdl() {
     SDL_Event e;
@@ -176,7 +204,7 @@ void PumpSdl() {
                 Post(kMainWindow, kWmActivateApp, 1, 0);
                 Post(kMainWindow, kWmActivate, 1, 0);
                 Post(kMainWindow, kWmSetFocus, 0, 0);
-            } else if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+            } else if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST && !IgnoreFocus()) {
                 Post(kMainWindow, kWmActivate, 0, 0);
                 Post(kMainWindow, kWmActivateApp, 0, 0);
                 Post(kMainWindow, kWmKillFocus, 0, 0);
@@ -212,7 +240,7 @@ uint32_t CreateWindowCommon(uint32_t exstyle, const std::string& cls, uint32_t n
         g_window_proc[hwnd] = g_classes[cls];
         g_window_parent[hwnd] = parent;
     }
-    Log("CreateWindowEx(%s, style %08x) -> %08x", cls.c_str(), style, hwnd);
+    Log("CreateWindowEx(%s, style %08x) -> %08x, wndproc %08x", cls.c_str(), style, hwnd, WindowProc(hwnd));
     // CREATESTRUCT for WM_NCCREATE/WM_CREATE: games keep `this` from lpCreateParams.
     uint32_t cs = HeapAlloc(48);
     W32(cs + 0, param);
@@ -243,16 +271,14 @@ U(RegisterClassExW) {
     uint32_t wc = Arg(c, 0);
     std::string n = ClassName(R32(wc + 40));
     std::lock_guard<std::mutex> lock(g_mutex);
-    g_classes[n] = R32(wc + 8);
-    Return(c, 0xc000u + uint32_t(g_classes.size()), 1);
+    Return(c, AddClass(n, R32(wc + 8)), 1);
 }
 U(RegisterClassA) {
     uint32_t wc = Arg(c, 0);  // WNDCLASSA: style, lpfnWndProc, ..., lpszClassName at 36
     uint32_t name = R32(wc + 36);
     std::lock_guard<std::mutex> lock(g_mutex);
     std::string n = name < 0x10000 ? "#" + std::to_string(name) : std::string(Str(name));
-    g_classes[n] = R32(wc + 4);
-    Return(c, 0xc000u + uint32_t(g_classes.size()), 1);
+    Return(c, AddClass(n, R32(wc + 4)), 1);
 }
 U(CreateWindowExW) {
     uint32_t r = CreateWindowCommon(Arg(c, 0), ClassName(Arg(c, 1)), Arg(c, 2), Arg(c, 3), int32_t(Arg(c, 4)),
@@ -263,6 +289,10 @@ U(CreateWindowExW) {
 // PeekMessage(MSG*, hwnd, min, max, remove): MSG = hwnd, message, wParam, lParam, time, pt.
 void PeekCommon(Ctx* c) {
     PumpSdl();
+    ++g_peeks;
+    if (g_trace_messages && (g_peeks % 200000) == 0)
+        Log("PeekMessage: %llu calls, %llu with a message, %zu timers, queue %zu", (unsigned long long)g_peeks,
+            (unsigned long long)g_peek_hits, g_timers.size(), g_queue.size());
     uint32_t out = Arg(c, 0), filter_lo = Arg(c, 2), filter_hi = Arg(c, 3);
     bool remove = (Arg(c, 4) & 1) != 0;
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -276,6 +306,22 @@ void PeekCommon(Ctx* c) {
         W32(out + 20, 0);
         W32(out + 24, 0);
         if (remove) g_queue.erase(it);
+        ++g_peek_hits;
+        Return(c, 1, 5);
+        return;
+    }
+    uint32_t want = Arg(c, 1);
+    bool paint_wanted = !(filter_lo || filter_hi) || (0x000f >= filter_lo && 0x000f <= filter_hi);
+    for (auto& [hwnd, pending] : g_paint_pending) {
+        if (!pending || !paint_wanted || (want && want != hwnd)) continue;
+        W32(out, hwnd);
+        W32(out + 4, 0x000f);  // WM_PAINT
+        W32(out + 8, 0);
+        W32(out + 12, 0);
+        W32(out + 16, uint32_t(SDL_GetTicks()));
+        W32(out + 20, 0);
+        W32(out + 24, 0);
+        ++g_peek_hits;
         Return(c, 1, 5);
         return;
     }
@@ -287,11 +333,20 @@ U(TranslateMessage) { Return(c, 0, 1); }  // WM_CHAR comes from SDL text input (
 U(DispatchMessageW) {
     uint32_t m = Arg(c, 0);
     uint32_t hwnd = R32(m), msg = R32(m + 4), wparam = R32(m + 8), lparam = R32(m + 12);
+    if (g_trace_messages && ++g_msg_counts[msg] && (g_msg_counts[msg] % 5000) == 0) {
+        std::string h;
+        for (auto& [k, v] : g_msg_counts) h += " " + std::to_string(k) + ":" + std::to_string(v);
+        Log("messages (peeks %llu, hits %llu):%s", (unsigned long long)g_peeks, (unsigned long long)g_peek_hits,
+            h.c_str());
+    }
     if (msg == kWmTimer && lparam) {
         GuestCall(lparam, {hwnd, msg, wparam, uint32_t(SDL_GetTicks())});  // TIMERPROC
         Return(c, 0, 1);
         return;
     }
+    // A WM_PAINT the window procedure did not validate would come back at once on Windows too; validating on
+    // dispatch keeps one frame per InvalidateRect instead of an endless loop.
+    if (msg == 0x000f) SetPaintPending(hwnd, false);
     Return(c, Send(hwnd, msg, wparam, lparam), 1);
 }
 U(PostMessageA) {
@@ -308,6 +363,7 @@ U(DefWindowProcW) {
     uint32_t r = 0;
     if (msg == kWmNcCreate) r = 1;  // creation goes on
     if (msg == kWmClose) Send(hwnd, kWmDestroy, 0, 0);  // DestroyWindow
+    if (msg == 0x000f) SetPaintPending(hwnd, false);   // WM_PAINT: DefWindowProc validates
     Return(c, r, 4);
 }
 U(SetTimer) {
@@ -335,8 +391,24 @@ U(KillTimer) {
     }
     Return(c, 1, 2);
 }
+// Showing the main window activates it as on Windows (the SDL window had focus before the game's window existed,
+// so its focus event went nowhere): WM_SHOWWINDOW, WM_ACTIVATEAPP, WM_ACTIVATE (WA_ACTIVE), WM_SETFOCUS, WM_SIZE and a
+// WM_PAINT. Games pause their rendering while they believe they are in the background.
+bool g_activated = false;
 U(ShowWindow) {
-    if (Arg(c, 0) == kMainWindow) Send(kMainWindow, kWmShowWindow, Arg(c, 1) ? 1 : 0, 0);
+    uint32_t hwnd = Arg(c, 0);
+    bool show = Arg(c, 1) != 0;
+    if (hwnd == kMainWindow) {
+        Send(kMainWindow, kWmShowWindow, show ? 1 : 0, 0);
+        if (show && !g_activated) {
+            g_activated = true;
+            Send(kMainWindow, kWmActivateApp, 1, 0);
+            Send(kMainWindow, kWmActivate, 1, 0);
+            Send(kMainWindow, kWmSetFocus, 0, 0);
+            Send(kMainWindow, kWmSize, 0, uint32_t(g_height) << 16 | uint32_t(g_width));
+            Post(kMainWindow, 0x000f, 0, 0);  // WM_PAINT
+        }
+    }
     Return(c, 0, 2);
 }
 U(UpdateWindow) { Return(c, 1, 1); }
@@ -387,6 +459,7 @@ U(ReleaseCapture) { Return(c, 1); }
 U(GetDoubleClickTime) { Return(c, 500); }
 U(GetMenu) { Return(c, 0, 1); }
 U(BeginPaint) {
+    SetPaintPending(Arg(c, 0), false);
     uint32_t ps = Arg(c, 1);  // PAINTSTRUCT: hdc, fErase, rcPaint, ...
     memset(Ptr<void>(ps), 0, 64);
     W32(ps, 0x00050000u);
@@ -394,9 +467,15 @@ U(BeginPaint) {
     W32(ps + 20, uint32_t(g_height));
     Return(c, 0x00050000u, 2);
 }
-U(EndPaint) { Return(c, 1, 2); }
-U(ValidateRect) { Return(c, 1, 2); }
-U(InvalidateRect) { Return(c, 1, 3); }
+U(EndPaint) { Return(c, 1, 2); }  // BeginPaint validated already
+U(ValidateRect) {
+    SetPaintPending(Arg(c, 0), false);
+    Return(c, 1, 2);
+}
+U(InvalidateRect) {
+    SetPaintPending(Arg(c, 0), true);
+    Return(c, 1, 3);
+}
 U(GetDC) { Return(c, 0x00050000u, 1); }
 U(ReleaseDC) { Return(c, 1, 2); }
 U(FillRect) { Return(c, 1, 3); }

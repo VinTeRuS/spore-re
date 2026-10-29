@@ -137,9 +137,12 @@ bool DispatchImport(Ctx* ctx, uint32_t target) {
         Fatal("unimplemented import %s!%s (called from %08x, args %08x %08x %08x %08x)", s.dll.c_str(),
               s.name.c_str(), R32(ctx->esp), Arg(ctx, 0), Arg(ctx, 1), Arg(ctx, 2), Arg(ctx, 3));
     }
-    // SPORERE_TRACE_IMPORTS=1: every import call with its caller, for following startup paths.
-    static const bool trace = getenv("SPORERE_TRACE_IMPORTS") != nullptr;
-    if (trace) Log("import %s!%s from %08x", s.dll.c_str(), s.name.c_str(), R32(ctx->esp));
+    // SPORERE_TRACE_IMPORTS=<seconds>: every import call with its caller from that many seconds after the start
+    // (0: from the beginning; tracing slows the game down a lot), for following what the game is doing.
+    static const char* trace_env = getenv("SPORERE_TRACE_IMPORTS");
+    static const auto trace_from = std::chrono::steady_clock::now() + std::chrono::seconds(trace_env ? atoi(trace_env) : 0);
+    if (trace_env && std::chrono::steady_clock::now() >= trace_from)
+        Log("import %s!%s from %08x", s.dll.c_str(), s.name.c_str(), R32(ctx->esp));
     if (ImportProfiling() && s.name != "SwitchToFiber") {  // a fiber switch does not return until switched back
         ProfiledCall(s, index, ctx);
     } else {
