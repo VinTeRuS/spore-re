@@ -899,7 +899,19 @@ bool WaitForWindow(int) { return true; }
 
 M(IDirect3DDevice9, Present) {
     ++g_present_count;
-    g_frames.fetch_add(1, std::memory_order_relaxed);  // the watchdog's frame counter (main.cpp)
+    uint64_t frame = g_frames.fetch_add(1, std::memory_order_relaxed) + 1;  // the watchdog's frame counter (main.cpp)
+    // A perf line every 10 s: frames per second and the frame count it was measured at.
+    {
+        static auto last = std::chrono::steady_clock::now();
+        static uint64_t last_frame = 0;
+        auto now = std::chrono::steady_clock::now();
+        double secs = std::chrono::duration<double>(now - last).count();
+        if (secs >= 10.0) {
+            Log("perf: frame %llu, %.1f fps", (unsigned long long)frame, double(frame - last_frame) / secs);
+            last = now;
+            last_frame = frame;
+        }
+    }
     if (!g_graves.empty()) DrainGraves(false);
     auto* dev = Host<IDirect3DDevice9>(Arg(c, 0));
     MaybeScreenshot(dev);
