@@ -212,23 +212,31 @@ static inline uint32_t RecompMemset(uint32_t d, uint32_t v, uint32_t n) {
     __atomic_thread_fence(__ATOMIC_ACQ_REL);
     return d;
 }
-/* rep movs with DF clear: 1 when done in one block (source and destination do not overlap), 0 to fall back to the
- * element loop. */
-static inline int RecompRepMovs(Ctx* c, uint32_t width) {
+/* rep movs / rep stos with DF clear, the whole instruction: one block between fences when source and destination do
+ * not overlap (or for a fill), the element loop otherwise (an overlapping forward copy repeats a pattern, which a
+ * memmove would not). They return nothing: the recompiler wraps calls that see the context in register spills. */
+static inline void RecompRepMovs(Ctx* c, uint32_t width) {
     uint32_t n = c->ecx * width, d = c->edi, s = c->esi;
-    if (!c->ecx) return 1;
-    if (!(d + n <= s || s + n <= d) || n / width != c->ecx) return 0;
-    RecompMemmove(d, s, n);
-    c->esi = s + n;
-    c->edi = d + n;
-    c->ecx = 0;
-    return 1;
+    if (!c->ecx) return;
+    if ((d + n <= s || s + n <= d) && n / width == c->ecx) {
+        RecompMemmove(d, s, n);
+        c->esi = s + n;
+        c->edi = d + n;
+        c->ecx = 0;
+        return;
+    }
+    while (c->ecx) {
+        if (width == 4) W32(c->edi, R32(c->esi));
+        else if (width == 2) W16(c->edi, R16(c->esi));
+        else W8(c->edi, R8(c->esi));
+        c->esi += width;
+        c->edi += width;
+        c->ecx--;
+    }
 }
-/* rep stos with DF clear: a byte fill, or a pattern for words/dwords. */
-static inline int RecompRepStos(Ctx* c, uint32_t width) {
+static inline void RecompRepStos(Ctx* c, uint32_t width) {
     uint32_t count = c->ecx, d = c->edi;
-    if (!count) return 1;
-    if (count * width / width != count) return 0;
+    if (!count) return;
     __atomic_thread_fence(__ATOMIC_ACQ_REL);
     if (width == 1) {
         memset(G(d), (int)(c->eax & 0xffu), count);
@@ -240,7 +248,6 @@ static inline int RecompRepStos(Ctx* c, uint32_t width) {
     __atomic_thread_fence(__ATOMIC_ACQ_REL);
     c->edi = d + count * width;
     c->ecx = 0;
-    return 1;
 }
 
 /* Flag helpers exist twice: on the context, and on a function's local copy of the flags (RFlags, see RLOCALS),

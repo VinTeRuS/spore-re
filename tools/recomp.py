@@ -904,11 +904,9 @@ class FunctionCompiler:
                 one = f"{wr}(c->edi, {val}); c->edi += {step};"
             if rep:
                 loop = f"while (c->ecx) {{ {one} c->ecx--; }}"
-                # Forward and non-overlapping (or a fill): one host memmove/fill between fences; otherwise the
-                # element loop, which also gives overlapping copies their byte-pattern semantics.
-                if base.startswith("movs"):
-                    return (f"if (!c->df && RecompRepMovs(c, {width})) {{}} else {loop}")
-                return f"if (!c->df && RecompRepStos(c, {width})) {{}} else {loop}"
+                # Forward: the runtime does the whole instruction (one block when it can, runtime.h).
+                helper = "RecompRepMovs" if base.startswith("movs") else "RecompRepStos"
+                return f"if (!c->df) {{ {helper}(c, {width}); }} else {loop}"
             return one
         if base in ("cmpsb", "cmpsd", "cmpsw", "scasb", "scasd"):
             width = {"b": 1, "d": 4, "w": 2}[base[-1]]
