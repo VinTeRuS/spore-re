@@ -25,7 +25,7 @@ import org.libsdl.app.SDLSurface;
 public class SporeActivity extends SDLActivity {
     @Override
     protected String[] getLibraries() {
-        return new String[] {"SDL2", "FAudio", "dxvk_d3d9", modernCpu() ? "main" : "main_v80"};
+        return new String[] {"SDL2", "dxvk_d3d9", modernCpu() ? "main" : "main_v80"};
     }
 
     /**
