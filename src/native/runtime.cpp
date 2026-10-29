@@ -106,6 +106,9 @@ extern "C" void RecompDispatch(Ctx* ctx, uint32_t target) {
     tl_ctx = saved;
 }
 
+// Spinlocks for locked operations on misaligned addresses (runtime.h RecompLockAddr), shared by all generated code.
+extern "C" uint8_t RecompMisalignedLocks[256] = {};
+
 extern "C" void RecompCpuid(Ctx* ctx) {
     // A plain SSE2 Pentium 4-class CPU: the engine only probes for SSE/SSE2 and the core count.
     switch (ctx->eax) {
