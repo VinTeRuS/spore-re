@@ -218,17 +218,20 @@ void HeapFree(uint32_t addr) {
     if (!addr) return;
     uint32_t block = addr - sizeof(Header);
     Header* h = Ptr<Header>(block);
-    if (h->magic != kMagic) {
-        Log("heap: free of a foreign block %08x ignored", addr);
+    std::unique_lock<std::mutex> lock(g_mutex);
+    // The header lives in guest memory: check it under the lock (two threads freeing one block) and do not trust a
+    // size class the game may have overwritten.
+    if (h->magic != kMagic || (h->cls != kLarge && h->cls >= uint32_t(kClasses))) {
+        static int logged = 0;
+        if (logged++ < 20) Log("heap: free of a foreign or damaged block %08x ignored (class %08x)", addr, h->cls);
         return;
     }
+    h->magic = 0;
     if (h->cls == kLarge) {
-        h->magic = 0;
+        lock.unlock();
         PageFree(block);
         return;
     }
-    std::lock_guard<std::mutex> lock(g_mutex);
-    h->magic = 0;
     g_free_blocks[h->cls].push_back(block);
 }
 
