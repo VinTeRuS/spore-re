@@ -409,6 +409,9 @@ def _wrap_calls(line):
 
 _XMM_RE = re.compile(r"c->xmm\[(\d)\]")
 _STACK_ACCESS_RE = re.compile(r"\b(R8|R16|R32|R64|RF32|RF64|W8|W16|W32|W64|WF32|WF64)\(\(uint32_t\)\(r_esp(?: \+ 0x[0-9a-f]+u)?\)")
+# [ebp + ...]: checked against the thread's stack at run time (runtime.h B* accessors), since ebp is not always the
+# frame pointer.
+_FRAME_ACCESS_RE = re.compile(r"\b(R8|R16|R32|R64|RF32|RF64|W8|W16|W32|W64|WF32|WF64)\(\(uint32_t\)\(r_ebp\b")
 _X87_CALLS = [("X87Precision(c, ", "X87PrecisionCW(r_cw, "), ("c->fpu_cw = ", "r_cw = c->fpu_cw = "),
               ("X87(c, ", "X87L("), ("X87Push(c, ", "X87PushL(r_st, &r_top, "), ("X87Pop(c)", "X87PopL(&r_top)"),
               ("X87StatusWord(c)", "X87StatusWordL(c, r_top)"), ("c->st_top", "r_top"), ("c->st[", "r_st[")]
@@ -450,6 +453,7 @@ def localize(line, x87=False):
     line = line.replace("Push32(c, ", "LPush32(&r_esp, ").replace("Pop32(c)", "LPop32(&r_esp)")
     # esp-relative memory is the thread's own stack: no TSO ordering needed.
     line = _STACK_ACCESS_RE.sub(lambda m: "S" + m.group(0), line)
+    line = _FRAME_ACCESS_RE.sub(lambda m: "B" + m.group(1) + "(c, (uint32_t)(r_ebp", line)
     line = _wrap_calls(line)
     return re.sub(r"\breturn;", "{ RSPILL; return; }", line)
 

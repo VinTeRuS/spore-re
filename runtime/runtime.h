@@ -37,6 +37,8 @@ typedef struct Ctx {
      * aliased register file; emms is a no-op) */
     uint64_t mm[8];
     uint32_t mxcsr;
+    /* the running guest thread's stack [stack_lo, stack_hi), set by the host (B* accessors below) */
+    uint32_t stack_lo, stack_hi;
 } Ctx;
 
 extern uint8_t* RecompMemoryBase;
@@ -196,6 +198,23 @@ static inline uint32_t Mask(int bits) { return bits == 32 ? 0xffffffffu : ((1u <
 /* ---- 128-bit memory ---- */
 static inline XmmValue RecompLoad128(uint32_t a) { XmmValue v; memcpy(&v, G(a), 16); return v; }
 static inline void RecompStore128(uint32_t a, XmmValue v) { memcpy(G(a), &v, 16); }
+
+/* Frame-pointer accesses ([ebp + k], recomp.py): usually the function's own locals, which no other thread sees, so
+ * they need none of the ordering the TSO accessors pay for. ebp can also be a general register in optimized code,
+ * so the address is checked against the thread's stack first; anything else keeps the ordered access. */
+#define RECOMP_ON_STACK(c, a) ((uint32_t)((a) - (c)->stack_lo) < (uint32_t)((c)->stack_hi - (c)->stack_lo))
+static inline uint8_t BR8(const Ctx* c, uint32_t a) { return RECOMP_ON_STACK(c, a) ? SR8(a) : R8(a); }
+static inline uint16_t BR16(const Ctx* c, uint32_t a) { return RECOMP_ON_STACK(c, a) ? SR16(a) : R16(a); }
+static inline uint32_t BR32(const Ctx* c, uint32_t a) { return RECOMP_ON_STACK(c, a) ? SR32(a) : R32(a); }
+static inline uint64_t BR64(const Ctx* c, uint32_t a) { return RECOMP_ON_STACK(c, a) ? SR64(a) : R64(a); }
+static inline float BRF32(const Ctx* c, uint32_t a) { return RECOMP_ON_STACK(c, a) ? SRF32(a) : RF32(a); }
+static inline double BRF64(const Ctx* c, uint32_t a) { return RECOMP_ON_STACK(c, a) ? SRF64(a) : RF64(a); }
+static inline void BW8(const Ctx* c, uint32_t a, uint8_t v) { if (RECOMP_ON_STACK(c, a)) SW8(a, v); else W8(a, v); }
+static inline void BW16(const Ctx* c, uint32_t a, uint16_t v) { if (RECOMP_ON_STACK(c, a)) SW16(a, v); else W16(a, v); }
+static inline void BW32(const Ctx* c, uint32_t a, uint32_t v) { if (RECOMP_ON_STACK(c, a)) SW32(a, v); else W32(a, v); }
+static inline void BW64(const Ctx* c, uint32_t a, uint64_t v) { if (RECOMP_ON_STACK(c, a)) SW64(a, v); else W64(a, v); }
+static inline void BWF32(const Ctx* c, uint32_t a, float v) { if (RECOMP_ON_STACK(c, a)) SWF32(a, v); else WF32(a, v); }
+static inline void BWF64(const Ctx* c, uint32_t a, double v) { if (RECOMP_ON_STACK(c, a)) SWF64(a, v); else WF64(a, v); }
 
 /* Natural alignment of a guest address on the host (for every build, TSO or not). */
 #define RECOMP_IS_ALIGNED(a, n) ((((uintptr_t)G(a)) & ((n) - 1)) == 0)
