@@ -947,15 +947,21 @@ M(IDirect3D9, GetAdapterIdentifier) {
         switch (id->VendorId) {
             case 0x1002: case 0x10de: case 0x10b4: case 0x12d2: case 0x8086: case 0x5333: break;
             default: {
+                // The card the game sees picks its graphics settings. Setting gpu_tier (the settings panel's "Game
+                // graphics"): 0 = Radeon X1300 (low), 1 = Radeon HD 2600 (medium, default), 2 = Radeon HD 4850 (high).
+                static const struct { uint32_t device; const char* name; } kTiers[] = {
+                    {0x7142, "ATI Radeon X1300"}, {0x9588, "ATI Radeon HD 2600"}, {0x9442, "ATI Radeon HD 4850"}};
+                int tier = SettingInt("gpu_tier", 1);
+                if (tier < 0 || tier > 2) tier = 1;
                 static bool logged = false;
                 if (!logged) {
                     logged = true;
-                    Log("d3d9: adapter \"%s\" (vendor %04x) is unknown to the game; reported as Radeon HD 2600",
-                        id->Description, unsigned(id->VendorId));
+                    Log("d3d9: adapter \"%s\" (vendor %04x) is unknown to the game; reported as %s",
+                        id->Description, unsigned(id->VendorId), kTiers[tier].name);
                 }
                 id->VendorId = 0x1002;
-                id->DeviceId = 0x9588;
-                snprintf(id->Description, sizeof id->Description, "ATI Radeon HD 2600");
+                id->DeviceId = kTiers[tier].device;
+                snprintf(id->Description, sizeof id->Description, "%s", kTiers[tier].name);
             }
         }
     }

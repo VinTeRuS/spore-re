@@ -74,6 +74,8 @@ public class SporeControls extends View {
 
     private final Setting sResolution = new Setting("Resolution", "render_height",
             new String[] {"540p", "630p", "720p", "900p", "1080p"}, new int[] {540, 630, 720, 900, 1080}, 720, true);
+    private final Setting sGraphics = new Setting("Game graphics", "gpu_tier",
+            new String[] {"Low", "Medium", "High"}, new int[] {0, 1, 2}, 1, true);
     private final Setting sTextures = new Setting("Textures", "texture_skip_mips",
             new String[] {"Full", "Half", "Quarter"}, new int[] {0, 1, 2}, 1, true);
     private final Setting sFps = new Setting("FPS limit", "fps_limit",
@@ -92,7 +94,7 @@ public class SporeControls extends View {
             new String[] {"Off", "On"}, new int[] {0, 1}, 1, false);
     private final Setting sShowFps = new Setting("Show FPS", "ui_fps",
             new String[] {"Off", "On"}, new int[] {0, 1}, 0, false);
-    private final Setting[] settings = {sResolution, sTextures, sFps, sBattery, sMode, sSpeed, sSize, sOpacity, sVibrate,
+    private final Setting[] settings = {sResolution, sGraphics, sTextures, sFps, sBattery, sMode, sSpeed, sSize, sOpacity, sVibrate,
                                         sShowFps};
     private final RectF[] settingRects = new RectF[settings.length];
     private boolean engineChanged;
