@@ -2,6 +2,7 @@ package com.sporere.game;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -27,24 +28,76 @@ import java.util.Locale;
 
 /**
  * Touch controls for Spore, drawn over SDL's surface. The game is played with the mouse; touches become SDL mouse
- * input:
- *   one finger: left button (tap = click, drag = drag); a long press without moving = right click;
- *   two fingers: the midpoint drags with the right button held (camera rotation in Spore), pinching turns the mouse
- *   wheel (zoom).
- * A column of small buttons on the left edge: Esc (the game's menu and "back"), the keyboard (names of creatures,
- * planets...), an FPS counter and the settings panel (quality presets: render resolution and frame limit; credit).
+ * input in one of two modes (settings):
+ *   Direct:   the finger is the cursor. Tap = click, drag = left drag, long press = right click.
+ *   Touchpad: a cursor on screen; dragging moves it, tap = click where it is, double tap and hold = left drag,
+ *             long press = right click. Easier on Spore's small buttons.
+ * In both: two fingers drag with the right button held (camera rotation), pinching turns the wheel (zoom).
+ * Buttons on the left edge: Esc (the game's menu, "back"), Cam (one-finger drags rotate the camera while it is on),
+ * the keyboard (names), and the gear: the settings panel. Engine settings (resolution, textures, frame limit, battery
+ * saver) go to sporere.ini and apply on the next start; the rest apply at once.
  */
 public class SporeControls extends View {
-    // MotionEvent button states and actions as SDL's onNativeMouse expects them.
     private static final int LEFT = MotionEvent.BUTTON_PRIMARY, RIGHT = MotionEvent.BUTTON_SECONDARY;
     private static final int DOWN = MotionEvent.ACTION_DOWN, UP = MotionEvent.ACTION_UP, MOVE = MotionEvent.ACTION_MOVE;
-    private static final long LONG_PRESS_MS = 550, LEFT_DELAY_MS = 70;
+    private static final long LONG_PRESS_MS = 500, LEFT_DELAY_MS = 60, DOUBLE_TAP_MS = 280;
+    private static final int TEAL = 0xff40d6c8;
 
     private final float density;
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG), text = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final SharedPreferences prefs;
 
-    /** An on-screen button: label, action, and where it was last drawn. */
+    // ---- settings ----
+    /** A row of the settings panel; tapping it steps through the values. */
+    private static final class Setting {
+        final String label, key;
+        final String[] names;
+        final int[] values;
+        final boolean engine;  // written to sporere.ini, applies on the next start
+        int index;
+
+        Setting(String label, String key, String[] names, int[] values, int def, boolean engine) {
+            this.label = label;
+            this.key = key;
+            this.names = names;
+            this.values = values;
+            this.engine = engine;
+            index = 0;
+            for (int i = 0; i < values.length; ++i) if (values[i] == def) index = i;
+        }
+
+        int value() {
+            return values[index];
+        }
+    }
+
+    private final Setting sResolution = new Setting("Resolution", "render_height",
+            new String[] {"540p", "630p", "720p", "900p", "1080p"}, new int[] {540, 630, 720, 900, 1080}, 720, true);
+    private final Setting sTextures = new Setting("Textures", "texture_skip_mips",
+            new String[] {"Full", "Half", "Quarter"}, new int[] {0, 1, 2}, 1, true);
+    private final Setting sFps = new Setting("FPS limit", "fps_limit",
+            new String[] {"Off", "30", "45", "60"}, new int[] {0, 30, 45, 60}, 0, true);
+    private final Setting sBattery = new Setting("Battery saver", "battery_saver",
+            new String[] {"Off", "On"}, new int[] {0, 1}, 0, true);
+    private final Setting sMode = new Setting("Touch mode", "ui_touchpad",
+            new String[] {"Direct", "Touchpad"}, new int[] {0, 1}, 0, false);
+    private final Setting sSpeed = new Setting("Cursor / camera speed", "ui_speed",
+            new String[] {"50%", "75%", "100%", "150%", "200%"}, new int[] {50, 75, 100, 150, 200}, 100, false);
+    private final Setting sSize = new Setting("Button size", "ui_scale",
+            new String[] {"80%", "100%", "120%", "140%"}, new int[] {80, 100, 120, 140}, 100, false);
+    private final Setting sOpacity = new Setting("Opacity", "ui_opacity",
+            new String[] {"40%", "60%", "80%", "100%"}, new int[] {40, 60, 80, 100}, 60, false);
+    private final Setting sVibrate = new Setting("Vibration", "ui_vibrate",
+            new String[] {"Off", "On"}, new int[] {0, 1}, 1, false);
+    private final Setting sShowFps = new Setting("Show FPS", "ui_fps",
+            new String[] {"Off", "On"}, new int[] {0, 1}, 0, false);
+    private final Setting[] settings = {sResolution, sTextures, sFps, sBattery, sMode, sSpeed, sSize, sOpacity, sVibrate,
+                                        sShowFps};
+    private final RectF[] settingRects = new RectF[settings.length];
+    private boolean engineChanged;
+
+    // ---- side buttons ----
     private static final class Button {
         final String label;
         final Runnable action;
@@ -58,28 +111,27 @@ public class SporeControls extends View {
 
     private final List<Button> buttons = new ArrayList<>();
     private Button pressedButton;
+    private boolean camLock;  // one-finger drags hold the right button (camera)
 
-    // gesture state
-    private enum Mode { NONE, PENDING, LEFT_DRAG, TWO_FINGER, BUTTON }
+    // ---- gesture state ----
+    private enum Mode { NONE, PENDING, LEFT_DRAG, CAM_DRAG, CURSOR, TWO_FINGER, BUTTON, PANEL }
     private Mode mode = Mode.NONE;
-    private float downX, downY, lastMidX, lastMidY, lastSpan;
-    private float wheelAccum;
-    private boolean longPressFired;
+    private float downX, downY, lastX, lastY, lastMidX, lastMidY, lastSpan, wheelAccum;
+    private float camX, camY;            // virtual pointer while rotating the camera (moves at the camera speed)
+    private float cursorX = -1, cursorY;  // touchpad cursor
+    private long lastTapTime;
+    private boolean longPressFired, moved;
     private final Runnable longPress = this::onLongPress;
     private final Runnable leftDown = this::startLeft;
 
-    // overlay state
-    private boolean showFps;
+    // ---- overlay ----
     private boolean panelOpen;
-    private final RectF panel = new RectF();
-    private final List<Button> panelButtons = new ArrayList<>();
+    private final RectF panel = new RectF(), panelClose = new RectF(), panelSupport = new RectF();
     private final Runnable fpsTick = new Runnable() {
         @Override
         public void run() {
-            if (showFps) {
-                invalidate();
-                handler.postDelayed(this, 500);
-            }
+            invalidate();
+            if (sShowFps.value() == 1) handler.postDelayed(this, 500);
         }
     };
 
@@ -89,30 +141,26 @@ public class SporeControls extends View {
     public SporeControls(Context context) {
         super(context);
         density = getResources().getDisplayMetrics().density;
+        prefs = context.getSharedPreferences("controls", Context.MODE_PRIVATE);
+        for (Setting s : settings) {
+            int v = s.engine ? readIni(s.key, s.value()) : prefs.getInt(s.key, s.value());
+            for (int i = 0; i < s.values.length; ++i) if (s.values[i] == v) s.index = i;
+        }
+        for (int i = 0; i < settingRects.length; ++i) settingRects[i] = new RectF();
         text.setColor(Color.WHITE);
         text.setTextAlign(Paint.Align.CENTER);
         buttons.add(new Button("Esc", () -> key(KeyEvent.KEYCODE_ESCAPE)));
+        buttons.add(new Button("Cam", () -> {
+            camLock = !camLock;
+            invalidate();
+        }));
         buttons.add(new Button("⌨", this::toggleKeyboard));
-        buttons.add(new Button("FPS", () -> {
-            showFps = !showFps;
-            if (showFps) handler.post(fpsTick);
-            invalidate();
-        }));
         buttons.add(new Button("⚙", () -> {
-            panelOpen = !panelOpen;
+            panelOpen = true;
+            engineChanged = false;
             invalidate();
         }));
-        String[][] presets = {
-            {"Performance", "540", "30"}, {"Balanced", "720", "60"}, {"Quality", "900", "60"},
-        };
-        for (String[] p : presets) {
-            panelButtons.add(new Button(p[0] + "  (" + p[1] + "p, " + p[2] + " fps)", () -> applyPreset(p[1], p[2])));
-        }
-        panelButtons.add(new Button("Support on Patreon", () -> SetupActivity.openSupport(getContext())));
-        panelButtons.add(new Button("Close", () -> {
-            panelOpen = false;
-            invalidate();
-        }));
+        if (sShowFps.value() == 1) handler.post(fpsTick);
     }
 
     // ---- input to SDL ----
@@ -125,55 +173,113 @@ public class SporeControls extends View {
         SDLActivity.onNativeKeyUp(keycode);
     }
 
-    private void wheel(float steps) {
+    private static void wheel(float steps) {
         SDLActivity.onNativeMouse(0, MotionEvent.ACTION_SCROLL, 0, steps, false);
+    }
+
+    private void click(float x, float y, int button) {
+        mouse(0, MOVE, x, y);
+        mouse(button, DOWN, x, y);
+        mouse(0, UP, x, y);
+    }
+
+    private void buzz(int kind) {
+        if (sVibrate.value() == 1) performHapticFeedback(kind);
+    }
+
+    private float speed() {
+        return sSpeed.value() / 100f;
+    }
+
+    private boolean touchpad() {
+        return sMode.value() == 1;
     }
 
     private void toggleKeyboard() {
         InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
-        if (imm != null) imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0);
+        if (imm == null) return;
+        setFocusableInTouchMode(true);
+        requestFocus();
+        imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0);
+    }
+
+    /** The pointer position a one-finger gesture acts at: the finger, or the touchpad cursor. */
+    private float px(float x) {
+        return touchpad() ? cursorX : x;
+    }
+
+    private float py(float y) {
+        return touchpad() ? cursorY : y;
     }
 
     private void startLeft() {
         if (mode != Mode.PENDING) return;
+        handler.removeCallbacks(longPress);
+        if (camLock) {
+            mode = Mode.CAM_DRAG;
+            camX = px(downX);
+            camY = py(downY);
+            mouse(0, MOVE, camX, camY);
+            mouse(RIGHT, DOWN, camX, camY);
+            return;
+        }
         mode = Mode.LEFT_DRAG;
-        mouse(0, MOVE, downX, downY);
-        mouse(LEFT, DOWN, downX, downY);
+        mouse(0, MOVE, px(downX), py(downY));
+        mouse(LEFT, DOWN, px(downX), py(downY));
     }
 
     private void onLongPress() {
-        if (mode != Mode.PENDING && mode != Mode.LEFT_DRAG) return;
-        if (mode == Mode.LEFT_DRAG) mouse(0, UP, downX, downY);
+        if (mode != Mode.PENDING || moved) return;
+        handler.removeCallbacks(leftDown);
         longPressFired = true;
         mode = Mode.NONE;
-        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
-        mouse(RIGHT, DOWN, downX, downY);
-        mouse(0, UP, downX, downY);
+        buzz(HapticFeedbackConstants.LONG_PRESS);
+        click(px(downX), py(downY), RIGHT);
     }
 
     @Override
     public boolean onTouchEvent(MotionEvent e) {
         int action = e.getActionMasked();
         float x = e.getX(), y = e.getY();
+        if (cursorX < 0) {
+            cursorX = getWidth() / 2f;
+            cursorY = getHeight() / 2f;
+        }
         if (action == MotionEvent.ACTION_DOWN) {
             longPressFired = false;
-            Button b = hit(x, y);
+            moved = false;
+            if (panelOpen) {
+                mode = Mode.PANEL;
+                return true;
+            }
+            Button b = hitButton(x, y);
             if (b != null) {
                 pressedButton = b;
                 mode = Mode.BUTTON;
                 return true;
             }
-            downX = x;
-            downY = y;
-            mode = Mode.PENDING;
-            handler.postDelayed(leftDown, LEFT_DELAY_MS);
+            downX = lastX = x;
+            downY = lastY = y;
+            long now = System.currentTimeMillis();
+            boolean doubleTap = touchpad() && now - lastTapTime < DOUBLE_TAP_MS;
+            if (doubleTap) {  // touchpad: double tap and hold = drag with the left button
+                mode = Mode.PENDING;
+                startLeft();
+                return true;
+            }
+            mode = touchpad() && !camLock ? Mode.CURSOR : Mode.PENDING;
+            if (mode == Mode.PENDING && !touchpad()) handler.postDelayed(leftDown, LEFT_DELAY_MS * 3);
             handler.postDelayed(longPress, LONG_PRESS_MS);
+            return true;
+        }
+        if (mode == Mode.PANEL) {
+            if (action == MotionEvent.ACTION_UP) panelTap(x, y);
             return true;
         }
         if (mode == Mode.BUTTON) {
             if (action == MotionEvent.ACTION_UP) {
                 if (pressedButton != null && pressedButton.rect.contains(x, y)) {
-                    performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+                    buzz(HapticFeedbackConstants.VIRTUAL_KEY);
                     pressedButton.action.run();
                 }
                 pressedButton = null;
@@ -186,127 +292,224 @@ public class SporeControls extends View {
                 if (e.getPointerCount() == 2) {
                     handler.removeCallbacks(leftDown);
                     handler.removeCallbacks(longPress);
-                    if (mode == Mode.LEFT_DRAG) mouse(0, UP, x, y);
+                    if (mode == Mode.LEFT_DRAG || mode == Mode.CAM_DRAG) mouse(0, UP, lastMidX, lastMidY);
                     mode = Mode.TWO_FINGER;
                     lastMidX = (e.getX(0) + e.getX(1)) / 2;
                     lastMidY = (e.getY(0) + e.getY(1)) / 2;
+                    camX = getWidth() / 2f;
+                    camY = getHeight() / 2f;
                     lastSpan = span(e);
                     wheelAccum = 0;
-                    mouse(0, MOVE, lastMidX, lastMidY);
-                    mouse(RIGHT, DOWN, lastMidX, lastMidY);
+                    mouse(0, MOVE, camX, camY);
+                    mouse(RIGHT, DOWN, camX, camY);
                 }
                 return true;
             case MotionEvent.ACTION_MOVE:
-                if (mode == Mode.TWO_FINGER && e.getPointerCount() >= 2) {
-                    float mx = (e.getX(0) + e.getX(1)) / 2, my = (e.getY(0) + e.getY(1)) / 2;
-                    mouse(RIGHT, MOVE, mx, my);
-                    lastMidX = mx;
-                    lastMidY = my;
-                    float s = span(e);
-                    wheelAccum += (s - lastSpan) / (40 * density);  // one wheel step per 40 dp of pinch
-                    lastSpan = s;
-                    while (Math.abs(wheelAccum) >= 1) {
-                        float step = Math.signum(wheelAccum);
-                        wheel(step);
-                        wheelAccum -= step;
-                    }
-                } else if (mode == Mode.PENDING || mode == Mode.LEFT_DRAG) {
-                    if (mode == Mode.PENDING && Math.hypot(x - downX, y - downY) > 12 * density) {
-                        handler.removeCallbacks(leftDown);
-                        handler.removeCallbacks(longPress);
-                        startLeft();
-                    }
-                    if (mode == Mode.LEFT_DRAG) {
-                        handler.removeCallbacks(longPress);
-                        mouse(LEFT, MOVE, x, y);
-                    }
-                }
+                onMove(e, x, y);
                 return true;
             case MotionEvent.ACTION_POINTER_UP:
                 if (mode == Mode.TWO_FINGER) {
-                    mouse(0, UP, lastMidX, lastMidY);
+                    mouse(0, UP, camX, camY);
                     mode = Mode.NONE;  // the remaining finger does nothing until lifted
                 }
                 return true;
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
                 handler.removeCallbacks(longPress);
-                if (mode == Mode.PENDING && !longPressFired) {  // a quick tap: click
-                    handler.removeCallbacks(leftDown);
-                    mouse(0, MOVE, downX, downY);
-                    mouse(LEFT, DOWN, downX, downY);
-                    mouse(0, UP, downX, downY);
+                handler.removeCallbacks(leftDown);
+                if (!longPressFired && !moved && (mode == Mode.PENDING || mode == Mode.CURSOR)) {
+                    if (camLock) {
+                        click(px(downX), py(downY), LEFT);
+                    } else {
+                        click(px(x), py(y), LEFT);
+                    }
+                    lastTapTime = System.currentTimeMillis();
+                    buzz(HapticFeedbackConstants.KEYBOARD_TAP);
                 } else if (mode == Mode.LEFT_DRAG) {
-                    mouse(0, UP, x, y);
-                } else if (mode == Mode.TWO_FINGER) {
-                    mouse(0, UP, lastMidX, lastMidY);
+                    mouse(0, UP, px(x), py(y));
+                } else if (mode == Mode.CAM_DRAG || mode == Mode.TWO_FINGER) {
+                    mouse(0, UP, camX, camY);
                 }
                 mode = Mode.NONE;
+                invalidate();
                 return true;
             default:
                 return true;
         }
     }
 
+    private void onMove(MotionEvent e, float x, float y) {
+        float dx = x - lastX, dy = y - lastY;
+        if (!moved && Math.hypot(x - downX, y - downY) > 10 * density) {
+            moved = true;
+            handler.removeCallbacks(longPress);
+        }
+        switch (mode) {
+            case TWO_FINGER: {
+                if (e.getPointerCount() < 2) return;
+                float mx = (e.getX(0) + e.getX(1)) / 2, my = (e.getY(0) + e.getY(1)) / 2;
+                camX += (mx - lastMidX) * speed();
+                camY += (my - lastMidY) * speed();
+                lastMidX = mx;
+                lastMidY = my;
+                mouse(RIGHT, MOVE, camX, camY);
+                float s = span(e);
+                wheelAccum += (s - lastSpan) / (40 * density);  // one wheel step per 40 dp of pinch
+                lastSpan = s;
+                while (Math.abs(wheelAccum) >= 1) {
+                    float step = Math.signum(wheelAccum);
+                    wheel(step);
+                    wheelAccum -= step;
+                }
+                break;
+            }
+            case CURSOR:
+                cursorX = clamp(cursorX + dx * speed(), 0, getWidth() - 1);
+                cursorY = clamp(cursorY + dy * speed(), 0, getHeight() - 1);
+                mouse(0, MOVE, cursorX, cursorY);
+                invalidate();
+                break;
+            case PENDING:
+                if (moved) {
+                    handler.removeCallbacks(leftDown);
+                    startLeft();
+                }
+                break;
+            case LEFT_DRAG:
+                if (touchpad()) {
+                    cursorX = clamp(cursorX + dx * speed(), 0, getWidth() - 1);
+                    cursorY = clamp(cursorY + dy * speed(), 0, getHeight() - 1);
+                    mouse(LEFT, MOVE, cursorX, cursorY);
+                    invalidate();
+                } else {
+                    mouse(LEFT, MOVE, x, y);
+                }
+                break;
+            case CAM_DRAG:
+                camX += dx * speed();
+                camY += dy * speed();
+                mouse(RIGHT, MOVE, camX, camY);
+                break;
+            default:
+                break;
+        }
+        lastX = x;
+        lastY = y;
+    }
+
+    private static float clamp(float v, float lo, float hi) {
+        return v < lo ? lo : v > hi ? hi : v;
+    }
+
     private static float span(MotionEvent e) {
         return (float) Math.hypot(e.getX(0) - e.getX(1), e.getY(0) - e.getY(1));
     }
 
-    private Button hit(float x, float y) {
-        if (panelOpen) {
-            for (Button b : panelButtons) if (b.rect.contains(x, y)) return b;
-            if (panel.contains(x, y)) return new Button("", () -> {});  // swallow taps on the panel
-        }
+    private Button hitButton(float x, float y) {
         for (Button b : buttons) if (b.rect.contains(x, y)) return b;
         return null;
     }
 
-    // ---- settings (sporere.ini next to the game data: read by the native side at start) ----
-    private void applyPreset(String renderHeight, String fpsLimit) {
+    // ---- settings panel ----
+    private void panelTap(float x, float y) {
+        if (panelClose.contains(x, y) || !panel.contains(x, y)) {
+            panelOpen = false;
+            if (engineChanged) {
+                android.widget.Toast.makeText(getContext(), "Restart the game to apply the * settings",
+                        android.widget.Toast.LENGTH_LONG).show();
+            }
+            invalidate();
+            return;
+        }
+        if (panelSupport.contains(x, y)) {
+            SetupActivity.openSupport(getContext());
+            return;
+        }
+        for (int i = 0; i < settings.length; ++i) {
+            if (!settingRects[i].contains(x, y)) continue;
+            Setting s = settings[i];
+            s.index = (s.index + 1) % s.values.length;
+            buzz(HapticFeedbackConstants.KEYBOARD_TAP);
+            if (s.engine) {
+                writeIni(s.key, s.value());
+                engineChanged = true;
+            } else {
+                prefs.edit().putInt(s.key, s.value()).apply();
+                if (s == sShowFps && s.value() == 1) handler.post(fpsTick);
+            }
+            invalidate();
+            return;
+        }
+    }
+
+    private File iniFile() {
         File dir = getContext().getExternalFilesDir(null);
-        if (dir == null) return;
-        File ini = new File(dir, "sporere.ini");
+        return dir == null ? null : new File(dir, "sporere.ini");
+    }
+
+    private int readIni(String key, int def) {
+        File ini = iniFile();
+        if (ini == null) return def;
+        try (BufferedReader r = new BufferedReader(new FileReader(ini))) {
+            for (String l; (l = r.readLine()) != null;) {
+                String[] kv = l.split("=", 2);
+                if (kv.length == 2 && kv[0].trim().equalsIgnoreCase(key)) return Integer.parseInt(kv[1].trim());
+            }
+        } catch (IOException | NumberFormatException ignored) {
+            // no setting yet
+        }
+        return def;
+    }
+
+    private void writeIni(String key, int value) {
+        File ini = iniFile();
+        if (ini == null) return;
         List<String> lines = new ArrayList<>();
         try (BufferedReader r = new BufferedReader(new FileReader(ini))) {
             for (String l; (l = r.readLine()) != null;) {
-                String k = l.split("=", 2)[0].trim().toLowerCase(Locale.ROOT);
-                if (!k.equals("render_height") && !k.equals("fps_limit")) lines.add(l);
+                if (!l.split("=", 2)[0].trim().equalsIgnoreCase(key)) lines.add(l);
             }
         } catch (IOException ignored) {
-            // no settings yet
+            // a new file
         }
-        lines.add("render_height = " + renderHeight);
-        lines.add("fps_limit = " + fpsLimit);
+        lines.add(key + " = " + value);
         try (FileWriter w = new FileWriter(ini)) {
             for (String l : lines) w.write(l + "\n");
         } catch (IOException ignored) {
-            return;
+            // the game keeps its defaults
         }
-        android.widget.Toast.makeText(getContext(), "Saved. Restart the game to apply.", android.widget.Toast.LENGTH_LONG)
-                .show();
-        panelOpen = false;
-        invalidate();
     }
 
     // ---- drawing ----
     @Override
     protected void onDraw(Canvas c) {
-        float size = 40 * density, gap = 10 * density, x = 8 * density;
+        float scale = sSize.value() / 100f, alpha = sOpacity.value() / 100f;
+        float size = 46 * density * scale, gap = 10 * density * scale, x = 8 * density;
         float y = getHeight() / 2f - (buttons.size() * (size + gap) - gap) / 2;
-        text.setTextSize(15 * density);
+        text.setTextSize(15 * density * scale);
         for (Button b : buttons) {
             b.rect.set(x, y, x + size, y + size);
-            fill.setColor(0x6a0a1a2a);
-            c.drawRoundRect(b.rect, 10 * density, 10 * density, fill);
-            fill.setColor(0x8064d6c8);
+            boolean on = b.label.equals("Cam") && camLock;
+            fill.setStyle(Paint.Style.FILL);
+            fill.setColor(on ? withAlpha(TEAL, 0.75f * alpha) : withAlpha(0xff0a1a2a, 0.55f * alpha));
+            c.drawRoundRect(b.rect, 12 * density, 12 * density, fill);
             fill.setStyle(Paint.Style.STROKE);
             fill.setStrokeWidth(1.5f * density);
-            c.drawRoundRect(b.rect, 10 * density, 10 * density, fill);
+            fill.setColor(withAlpha(TEAL, 0.8f * alpha));
+            c.drawRoundRect(b.rect, 12 * density, 12 * density, fill);
             fill.setStyle(Paint.Style.FILL);
-            c.drawText(b.label, b.rect.centerX(), b.rect.centerY() + 5 * density, text);
+            text.setColor(withAlpha(Color.WHITE, Math.max(0.5f, alpha)));
+            c.drawText(b.label, b.rect.centerX(), b.rect.centerY() + 5 * density * scale, text);
             y += size + gap;
         }
-        if (showFps) {
+        text.setColor(Color.WHITE);
+        if (touchpad() && cursorX >= 0) {  // the touchpad cursor
+            fill.setColor(0xccffffff);
+            c.drawCircle(cursorX, cursorY, 7 * density, fill);
+            fill.setColor(0xff102030);
+            c.drawCircle(cursorX, cursorY, 3 * density, fill);
+        }
+        if (sShowFps.value() == 1) {
             text.setTextSize(13 * density);
             text.setTextAlign(Paint.Align.LEFT);
             c.drawText(String.format(Locale.ROOT, "%.0f fps", nativeFps()), x + size + gap, 22 * density, text);
@@ -315,28 +518,60 @@ public class SporeControls extends View {
         if (panelOpen) drawPanel(c);
     }
 
+    private static int withAlpha(int color, float a) {
+        return (Math.round(Math.max(0, Math.min(1, a)) * 255) << 24) | (color & 0xffffff);
+    }
+
     private void drawPanel(Canvas c) {
-        float w = 360 * density, row = 44 * density, pad = 14 * density;
-        float h = pad * 2 + 56 * density + panelButtons.size() * (row + 6 * density);
-        float left = (getWidth() - w) / 2, top = (getHeight() - h) / 2;
+        float w = Math.min(getWidth() - 32 * density, 640 * density);
+        float row = 38 * density, pad = 16 * density, header = 64 * density;
+        int rows = (settings.length + 1) / 2;
+        float h = header + rows * (row + 6 * density) + 70 * density;
+        float left = (getWidth() - w) / 2, top = Math.max(8 * density, (getHeight() - h) / 2);
         panel.set(left, top, left + w, top + h);
-        fill.setColor(0xee0b1626);
-        c.drawRoundRect(panel, 16 * density, 16 * density, fill);
-        text.setTextSize(16 * density);
-        c.drawText("Spore — settings", panel.centerX(), top + pad + 16 * density, text);
+        fill.setStyle(Paint.Style.FILL);
+        fill.setColor(0xf00b1626);
+        c.drawRoundRect(panel, 18 * density, 18 * density, fill);
+        fill.setStyle(Paint.Style.STROKE);
+        fill.setStrokeWidth(2 * density);
+        fill.setColor(TEAL);
+        c.drawRoundRect(panel, 18 * density, 18 * density, fill);
+        fill.setStyle(Paint.Style.FILL);
+        text.setTextAlign(Paint.Align.CENTER);
+        text.setTextSize(18 * density);
+        c.drawText("⚙  Settings", panel.centerX(), top + 30 * density, text);
         text.setTextSize(12 * density);
         text.setColor(0xffa8c8d8);
-        c.drawText(SetupActivity.CREDIT, panel.centerX(), top + pad + 38 * density, text);
+        c.drawText(SetupActivity.CREDIT + "   ·   * = after restart", panel.centerX(), top + 50 * density, text);
         text.setColor(Color.WHITE);
-        text.setTextSize(14 * density);
-        float y = top + pad + 56 * density;
-        for (Button b : panelButtons) {
-            b.rect.set(left + pad, y, left + w - pad, y + row);
-            fill.setColor(0xff1d3a52);
-            c.drawRoundRect(b.rect, 10 * density, 10 * density, fill);
-            c.drawText(b.label, b.rect.centerX(), b.rect.centerY() + 5 * density, text);
-            y += row + 6 * density;
+        float colW = (w - pad * 3) / 2;
+        for (int i = 0; i < settings.length; ++i) {
+            int col = i / rows, r = i % rows;
+            float rx = left + pad + col * (colW + pad), ry = top + header + r * (row + 6 * density);
+            RectF rect = settingRects[i];
+            rect.set(rx, ry, rx + colW, ry + row);
+            fill.setColor(0xff17304a);
+            c.drawRoundRect(rect, 10 * density, 10 * density, fill);
+            Setting s = settings[i];
+            text.setTextSize(13 * density);
+            text.setTextAlign(Paint.Align.LEFT);
+            c.drawText(s.label + (s.engine ? " *" : ""), rect.left + 12 * density, rect.centerY() + 5 * density, text);
+            text.setTextAlign(Paint.Align.RIGHT);
+            text.setColor(TEAL);
+            c.drawText(s.names[s.index], rect.right - 12 * density, rect.centerY() + 5 * density, text);
+            text.setColor(Color.WHITE);
         }
+        text.setTextAlign(Paint.Align.CENTER);
+        float by = top + h - 52 * density, bw = (w - pad * 3) / 2;
+        panelSupport.set(left + pad, by, left + pad + bw, by + 38 * density);
+        panelClose.set(left + pad * 2 + bw, by, left + pad * 2 + bw * 2, by + 38 * density);
+        fill.setColor(0xff8a3a7a);
+        c.drawRoundRect(panelSupport, 10 * density, 10 * density, fill);
+        fill.setColor(0xff1d5a6a);
+        c.drawRoundRect(panelClose, 10 * density, 10 * density, fill);
+        text.setTextSize(14 * density);
+        c.drawText("Support on Patreon", panelSupport.centerX(), panelSupport.centerY() + 5 * density, text);
+        c.drawText("Close", panelClose.centerX(), panelClose.centerY() + 5 * density, text);
     }
 
     /** The system back button opens the game's menu, like Esc. */
