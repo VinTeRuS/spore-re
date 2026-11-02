@@ -1,0 +1,99 @@
+// Sampling CPU profiler for finding what is slow on a phone (setting cpu_profile = 1). ITIMER_PROF fires SIGPROF
+// every millisecond of process CPU time on whichever thread is running; the handler records the interrupted program
+// counter in a lock-free ring. Every 30 s a reporter thread logs the 200 most frequent addresses as offsets into
+// libmain.so (64-byte buckets), with their share of the samples. The APK's library is stripped: the offsets are
+// turned into function names on the desktop with the unstripped build (llvm-addr2line), and summed per function.
+#include <dlfcn.h>
+#include <signal.h>
+#include <sys/time.h>
+#include <ucontext.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <thread>
+#include <unordered_map>
+#include <vector>
+
+#include "guest.h"
+
+namespace native {
+
+namespace {
+
+constexpr uint32_t kRing = 1u << 16;
+std::atomic<uint32_t> g_head{0};
+uintptr_t g_ring[kRing];
+uintptr_t g_base = 0;
+
+void OnProf(int, siginfo_t*, void* context) {
+    auto* uc = static_cast<ucontext_t*>(context);
+#if defined(__aarch64__)
+    uintptr_t pc = uc->uc_mcontext.pc;
+#elif defined(__x86_64__)
+    uintptr_t pc = uc->uc_mcontext.gregs[REG_RIP];
+#else
+    uintptr_t pc = 0;
+#endif
+    uint32_t i = g_head.fetch_add(1, std::memory_order_relaxed);
+    g_ring[i & (kRing - 1)] = pc;
+}
+
+void Report() {
+    uint32_t seen = 0;
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::seconds(30));
+        uint32_t head = g_head.load(std::memory_order_relaxed);
+        uint32_t n = std::min(head - seen, kRing);
+        std::unordered_map<uintptr_t, uint32_t> hist;
+        uint32_t outside = 0;
+        for (uint32_t k = head - n; k != head; ++k) {
+            uintptr_t pc = g_ring[k & (kRing - 1)];
+            if (pc < g_base) {
+                ++outside;
+                continue;
+            }
+            ++hist[(pc - g_base) & ~uintptr_t(63)];
+        }
+        seen = head;
+        std::vector<std::pair<uint32_t, uintptr_t>> top;
+        for (auto& [off, count] : hist) top.push_back({count, off});
+        std::sort(top.rbegin(), top.rend());
+        if (top.size() > 200) top.resize(200);
+        Log("profile: %u samples (%u outside libmain: drivers, libc, DXVK), top buckets:", n, outside);
+        std::string line;
+        for (auto& [count, off] : top) {
+            char item[48];
+            snprintf(item, sizeof item, " %lx:%u", (unsigned long)off, count);
+            line += item;
+            if (line.size() > 900) {
+                Log("profile:%s", line.c_str());
+                line.clear();
+            }
+        }
+        if (!line.empty()) Log("profile:%s", line.c_str());
+    }
+}
+
+}  // namespace
+
+void StartProfiler() {
+    if (!SettingInt("cpu_profile", 0)) return;
+    Dl_info info;
+    if (dladdr(reinterpret_cast<void*>(&StartProfiler), &info) && info.dli_fbase)
+        g_base = reinterpret_cast<uintptr_t>(info.dli_fbase);
+    struct sigaction sa {};
+    sa.sa_sigaction = OnProf;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGPROF, &sa, nullptr);
+    itimerval t {};
+    t.it_interval.tv_usec = 1000;
+    t.it_value.tv_usec = 1000;
+    setitimer(ITIMER_PROF, &t, nullptr);
+    std::thread(Report).detach();
+    Log("profiler: sampling every 1 ms of CPU time, module base %lx", (unsigned long)g_base);
+}
+
+}  // namespace native

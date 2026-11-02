@@ -176,6 +176,7 @@ void InitD3D9Bridge();  // d3d9.cpp
 void SelectVulkanDriver();  // vulkan_driver.cpp
 void VulkanDriverConfirm();
 void InitInput();  // input.cpp
+void StartProfiler();  // profiler.cpp
 void ForwardInput(const SDL_Event& e);
 void InjectKey(SDL_Scancode sc, bool down);
 extern SDL_Window* g_sdl_window;
@@ -310,6 +311,7 @@ int main(int argc, char** argv) {
     Log("%s - build %s %s", kCredit, __DATE__, __TIME__);
     InitGuestMemory();
     GuestThread* main_thread = AttachThread(1u << 20);  // the exe's SizeOfStackReserve
+    StartProfiler();  // cpu_profile = 1: sampled hot spots in the log
     PinToBigCores();  // the game's main thread runs its whole frame: keep it on the fast cores
     // ADPF: the frame budget from fps_limit (60 when unlimited); Present reports each frame's work (d3d9.cpp).
     {
