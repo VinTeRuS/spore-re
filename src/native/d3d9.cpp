@@ -988,6 +988,13 @@ M(IDirect3DQuery9, GetData) {
 M(IDirect3DDevice9, Present) {
     ++g_present_count;
     uint64_t frame = g_frames.fetch_add(1, std::memory_order_relaxed) + 1;  // the watchdog's frame counter (main.cpp)
+    // ADPF: how long this frame's work took (from the end of the previous Present to now, before any pacing sleep).
+    {
+        static auto work_start = std::chrono::steady_clock::now();
+        auto now = std::chrono::steady_clock::now();
+        PerfHintFrame(std::chrono::duration_cast<std::chrono::nanoseconds>(now - work_start).count());
+        work_start = now;
+    }
     // fps_limit (sporere.ini, the settings panel's presets): frames are paced to at most that rate, which keeps a
     // phone cooler (and its clocks up longer) when the game would otherwise run unevenly above it.
     {

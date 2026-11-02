@@ -202,6 +202,8 @@ uint32_t GuestCall(uint32_t va, std::initializer_list<uint32_t> args, uint32_t e
     memset(&ctx, 0, sizeof(ctx));
     ctx.esp = (tl_ctx ? tl_ctx->esp - 256 : t->stack_hi - 64) & ~15u;
     ctx.fs_base = t->teb;
+    ctx.stack_lo = t->stack_lo;  // B* accessors: [ebp + k] on this stack skips TSO ordering
+    ctx.stack_hi = t->stack_hi;
     ctx.fpu_cw = 0x027f;
     ctx.ecx = ecx;
     const uint32_t* a = args.end();

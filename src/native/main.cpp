@@ -310,6 +310,12 @@ int main(int argc, char** argv) {
     Log("%s - build %s %s", kCredit, __DATE__, __TIME__);
     InitGuestMemory();
     GuestThread* main_thread = AttachThread(1u << 20);  // the exe's SizeOfStackReserve
+    PinToBigCores();  // the game's main thread runs its whole frame: keep it on the fast cores
+    // ADPF: the frame budget from fps_limit (60 when unlimited); Present reports each frame's work (d3d9.cpp).
+    {
+        int limit = SettingInt("fps_limit", 0);
+        PerfHintStart(limit > 0 ? limit : 60);
+    }
     InitD3D9Bridge();
     setenv("DXVK_WSI_DRIVER", "SDL2", 0);  // DXVK native: the HWNDs we pass are SDL windows
     SelectVulkanDriver();
