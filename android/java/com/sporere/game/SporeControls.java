@@ -72,10 +72,11 @@ public class SporeControls extends View {
         }
     }
 
-    private final Setting sResolution = new Setting("Resolution", "render_height",
-            new String[] {"540p", "630p", "720p", "900p", "1080p"}, new int[] {540, 630, 720, 900, 1080}, 720, true);
+    private final Setting sResolution = new Setting("UI size", "render_height",
+            new String[] {"Large 540p", "Medium 600p", "Small 720p", "Tiny 900p"}, new int[] {540, 600, 720, 900}, 600,
+            true);
     private final Setting sGraphics = new Setting("Game graphics", "gpu_tier",
-            new String[] {"Low", "Medium", "High"}, new int[] {0, 1, 2}, 1, true);
+            new String[] {"Low", "Medium", "High"}, new int[] {0, 1, 2}, 0, true);
     private final Setting sTextures = new Setting("Textures", "texture_skip_mips",
             new String[] {"Full", "Half", "Quarter"}, new int[] {0, 1, 2}, 1, true);
     private final Setting sFps = new Setting("FPS limit", "fps_limit",
@@ -114,6 +115,11 @@ public class SporeControls extends View {
     private final List<Button> buttons = new ArrayList<>();
     private Button pressedButton;
     private boolean camLock;  // one-finger drags hold the right button (camera)
+    private SporeStick stick;  // WASD movement stick (creature and tribal stages), shown with the WASD button
+
+    void setStick(SporeStick s) {
+        stick = s;
+    }
 
     // ---- gesture state ----
     private enum Mode { NONE, PENDING, LEFT_DRAG, CAM_DRAG, CURSOR, TWO_FINGER, BUTTON, PANEL }
@@ -154,6 +160,12 @@ public class SporeControls extends View {
         buttons.add(new Button("Esc", () -> key(KeyEvent.KEYCODE_ESCAPE)));
         buttons.add(new Button("Cam", () -> {
             camLock = !camLock;
+            invalidate();
+        }));
+        buttons.add(new Button("WASD", () -> {
+            if (stick == null) return;
+            if (stick.getVisibility() == View.VISIBLE) stick.hide();
+            else stick.setVisibility(View.VISIBLE);
             invalidate();
         }));
         buttons.add(new Button("⌨", this::toggleKeyboard));
@@ -491,7 +503,8 @@ public class SporeControls extends View {
         text.setTextSize(15 * density * scale);
         for (Button b : buttons) {
             b.rect.set(x, y, x + size, y + size);
-            boolean on = b.label.equals("Cam") && camLock;
+            boolean on = (b.label.equals("Cam") && camLock)
+                    || (b.label.equals("WASD") && stick != null && stick.getVisibility() == View.VISIBLE);
             fill.setStyle(Paint.Style.FILL);
             fill.setColor(on ? withAlpha(TEAL, 0.75f * alpha) : withAlpha(0xff0a1a2a, 0.55f * alpha));
             c.drawRoundRect(b.rect, 12 * density, 12 * density, fill);

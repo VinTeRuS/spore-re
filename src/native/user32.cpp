@@ -752,12 +752,12 @@ uint32_t HostWindow() { return kMainWindow; }
 
 void PostWindowMessage(uint32_t msg, uint32_t wparam, uint32_t lparam) { Post(kMainWindow, msg, wparam, lparam); }
 
-// The engine renders at the size of the window's client area. Setting render_height (default 720 on Android, 0 = the
+// The engine renders at the size of the window's client area. Setting render_height (default 600 on Android, 0 = the
 // real window size elsewhere) makes it render smaller, keeping the window's aspect ratio; DXVK scales the frame to
 // the window when presenting.
 void InitClientSize(int window_w, int window_h) {
 #ifdef __ANDROID__
-    int rh = SettingInt("render_height", 720);
+    int rh = SettingInt("render_height", 600);  // Spore's smallest supported height: the largest UI on a phone
 #else
     int rh = SettingInt("render_height", 0);
 #endif

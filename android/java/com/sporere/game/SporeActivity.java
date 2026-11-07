@@ -77,8 +77,14 @@ public class SporeActivity extends SDLActivity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);  // no dimming while playing
         // Spore is played with the mouse: SporeControls turns touches into mouse input (tap, drag, long press,
         // two-finger camera, pinch zoom) and adds Esc, keyboard, FPS and settings buttons.
-        addContentView(new SporeControls(this), new ViewGroup.LayoutParams(
+        SporeControls controls = new SporeControls(this);
+        addContentView(controls, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        // the WASD stick above the controls: it takes only touches on itself, the rest falls through
+        SporeStick stick = new SporeStick(this);
+        addContentView(stick, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        controls.setStick(stick);
         // The author's credit: on start, and small in a corner for the whole game (it lets touches through).
         Toast.makeText(this, SetupActivity.CREDIT, Toast.LENGTH_LONG).show();
         TextView mark = new TextView(this);
