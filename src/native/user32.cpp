@@ -504,16 +504,26 @@ U(GetWindowThreadProcessId) {
 U(AdjustWindowRectEx) { Return(c, 1, 4); }  // borderless: the client area is the window
 U(ClientToScreen) { Return(c, 1, 2); }
 U(ScreenToClient) { Return(c, 1, 2); }
+// The cursor in the game's coordinates: SDL reports window pixels, the game lives in its client size (the render
+// size, InitClientSize), which on a phone is much smaller than the screen. Window messages are scaled the same way
+// (input.cpp PackPoint); the 3D world picks with GetCursorPos, so an unscaled position missed what was tapped.
 U(GetCursorPos) {
     int x = 0, y = 0;
     SDL_GetMouseState(&x, &y);
+    int ww = 1, wh = 1;
+    SDL_GetWindowSize(g_sdl_window, &ww, &wh);
+    x = x * g_width / (ww > 0 ? ww : 1);
+    y = y * g_height / (wh > 0 ? wh : 1);
     if (g_script_mouse.active) x = g_script_mouse.x, y = g_script_mouse.y;
     W32(Arg(c, 0), uint32_t(x));
     W32(Arg(c, 0) + 4, uint32_t(y));
     Return(c, 1, 1);
 }
 U(SetCursorPos) {
-    SDL_WarpMouseInWindow(g_sdl_window, int(Arg(c, 0)), int(Arg(c, 1)));
+    int ww = 1, wh = 1;
+    SDL_GetWindowSize(g_sdl_window, &ww, &wh);
+    SDL_WarpMouseInWindow(g_sdl_window, int(Arg(c, 0)) * ww / (g_width > 0 ? g_width : 1),
+                          int(Arg(c, 1)) * wh / (g_height > 0 ? g_height : 1));
     Return(c, 1, 2);
 }
 U(SetCursor) { Return(c, 0, 1); }
