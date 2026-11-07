@@ -10,6 +10,8 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cstring>
+#include <string>
 #include <atomic>
 #include <chrono>
 #include <thread>
@@ -47,21 +49,41 @@ void Report() {
         uint32_t head = g_head.load(std::memory_order_relaxed);
         uint32_t n = std::min(head - seen, kRing);
         std::unordered_map<uintptr_t, uint32_t> hist;
+        std::unordered_map<std::string, uint32_t> libs;  // other modules (DXVK, the GPU driver, libc), by name
         uint32_t outside = 0;
         for (uint32_t k = head - n; k != head; ++k) {
             uintptr_t pc = g_ring[k & (kRing - 1)];
+            Dl_info info;
+            if (dladdr(reinterpret_cast<void*>(pc), &info) && info.dli_fbase &&
+                reinterpret_cast<uintptr_t>(info.dli_fbase) != g_base) {
+                const char* name = info.dli_fname ? strrchr(info.dli_fname, '/') : nullptr;
+                ++libs[name ? name + 1 : (info.dli_fname ? info.dli_fname : "?")];
+                ++outside;
+                continue;
+            }
             if (pc < g_base) {
+                ++libs["(unknown)"];
                 ++outside;
                 continue;
             }
             ++hist[(pc - g_base) & ~uintptr_t(63)];
         }
         seen = head;
+        std::vector<std::pair<uint32_t, std::string>> by_lib;
+        for (auto& [name, count] : libs) by_lib.push_back({count, name});
+        std::sort(by_lib.rbegin(), by_lib.rend());
+        std::string libline;
+        for (auto& [count, name] : by_lib) {
+            char item[96];
+            snprintf(item, sizeof item, " %s:%u", name.c_str(), count);
+            libline += item;
+        }
+        Log("profile: other modules:%s", libline.c_str());
         std::vector<std::pair<uint32_t, uintptr_t>> top;
         for (auto& [off, count] : hist) top.push_back({count, off});
         std::sort(top.rbegin(), top.rend());
         if (top.size() > 200) top.resize(200);
-        Log("profile: %u samples (%u outside libmain: drivers, libc, DXVK), top buckets:", n, outside);
+        Log("profile: %u samples (%u in other modules), libmain top buckets:", n, outside);
         std::string line;
         for (auto& [count, off] : top) {
             char item[48];
