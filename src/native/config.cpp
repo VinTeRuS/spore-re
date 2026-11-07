@@ -1,6 +1,7 @@
-// Port settings: sporere.ini in the working directory (on Android: the app's external files directory, next to
-// game/), one `key = value` per line, `#` or `;` starts a comment. An environment variable SPORERE_<KEY> (upper
-// case) overrides the file.
+// Port settings: sporere.ini in the working directory (on Android: the app's external files directory, written by
+// the settings panel), then sporere.ini in the game folder (on Android: /sdcard/Spore, which a PC can write over USB
+// or adb, unlike the app's own folder) whose keys take precedence; one `key = value` per line, `#` or `;` starts a
+// comment. An environment variable SPORERE_<KEY> (upper case) overrides both.
 #include <cctype>
 #include <cstdlib>
 #include <map>
@@ -13,10 +14,9 @@ namespace native {
 
 namespace {
 
-std::map<std::string, std::string> Load() {
-    std::map<std::string, std::string> m;
-    FILE* f = fopen("sporere.ini", "r");
-    if (!f) return m;
+void LoadFile(const std::string& path, std::map<std::string, std::string>& m) {
+    FILE* f = fopen(path.c_str(), "r");
+    if (!f) return;
     char line[512];
     while (fgets(line, sizeof(line), f)) {
         std::string s(line);
@@ -35,6 +35,12 @@ std::map<std::string, std::string> Load() {
         m[key] = trim(s.substr(eq + 1));
     }
     fclose(f);
+}
+
+std::map<std::string, std::string> Load() {
+    std::map<std::string, std::string> m;
+    LoadFile("sporere.ini", m);
+    if (g_game_dir) LoadFile(std::string(g_game_dir) + "/sporere.ini", m);
     return m;
 }
 
