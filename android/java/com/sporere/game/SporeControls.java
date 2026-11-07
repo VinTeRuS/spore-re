@@ -227,12 +227,12 @@ public class SporeControls extends View {
      * A click the game sees whichever way it reads the mouse. Menus use the window messages, but picking things in
      * the 3D world (stars in the galaxy, creatures, buildings) polls the button state once per frame: a press and
      * release within one frame never shows there. So the cursor moves first (hover), the button goes down a little
-     * later and stays down for a few frames.
+     * later and stays down for a few frames (150 ms: several frames even at a low frame rate).
      */
     private void click(float x, float y, int button) {
         mouse(0, MOVE, x, y);
-        handler.postDelayed(() -> mouse(button, DOWN, x, y), 35);
-        handler.postDelayed(() -> mouse(0, UP, x, y), 105);
+        handler.postDelayed(() -> mouse(button, DOWN, x, y), 60);
+        handler.postDelayed(() -> mouse(0, UP, x, y), 210);
     }
 
     private void buzz(int kind) {
@@ -327,6 +327,9 @@ public class SporeControls extends View {
                 return true;
             }
             mode = touchpad() && !camLock ? Mode.CURSOR : Mode.PENDING;
+            // direct mode: the cursor goes under the finger at once, so the game sees it hover over what will be
+            // tapped for as long as the finger rests (3D picking needs a few frames of hover before the press)
+            if (!touchpad() && !camLock) mouse(0, MOVE, x, y);
             if (mode == Mode.PENDING && !touchpad()) handler.postDelayed(leftDown, LEFT_DELAY_MS * 3);
             handler.postDelayed(longPress, LONG_PRESS_MS);
             return true;
