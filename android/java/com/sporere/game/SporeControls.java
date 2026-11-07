@@ -33,8 +33,9 @@ import java.util.Locale;
  *   Touchpad: a cursor on screen; dragging moves it, tap = click where it is, double tap and hold = left drag,
  *             long press = right click. Easier on Spore's small buttons.
  * In both: two fingers drag with the right button held (camera rotation), pinching turns the wheel (zoom).
- * Buttons on the left edge: Esc (the game's menu, "back"), Cam (one-finger drags rotate the camera while it is on),
- * the keyboard (names), and the gear: the settings panel. Engine settings (resolution, textures, frame limit, battery
+ * A menu handle (draggable, so it can sit wherever the current stage leaves room) opens a row of buttons: Esc (the
+ * game's menu, "back"), Cam (one-finger drags rotate the camera while on), WASD (the movement stick), Undo (Ctrl+Z, the
+ * editors), the keyboard (names) and the gear: the settings panel. Engine settings (resolution, textures, frame limit, battery
  * saver) go to sporere.ini and apply on the next start; the rest apply at once.
  */
 public class SporeControls extends View {
@@ -72,31 +73,22 @@ public class SporeControls extends View {
         }
     }
 
+    // Engine settings (*) go to sporere.ini and apply on the next start; the others at once.
+    private final Setting sQuality = new Setting("Quality", "gpu_tier",
+            new String[] {"Fast", "Balanced", "Pretty"}, new int[] {0, 1, 2}, 0, true);
     private final Setting sResolution = new Setting("UI size", "render_height",
-            new String[] {"Large 540p", "Medium 600p", "Small 720p", "Tiny 900p"}, new int[] {540, 600, 720, 900}, 600,
-            true);
-    private final Setting sGraphics = new Setting("Game graphics", "gpu_tier",
-            new String[] {"Low", "Medium", "High"}, new int[] {0, 1, 2}, 0, true);
-    private final Setting sTextures = new Setting("Textures", "texture_skip_mips",
-            new String[] {"Full", "Half", "Quarter"}, new int[] {0, 1, 2}, 1, true);
+            new String[] {"Large", "Medium", "Small"}, new int[] {540, 600, 720}, 600, true);
     private final Setting sFps = new Setting("FPS limit", "fps_limit",
-            new String[] {"Off", "30", "45", "60"}, new int[] {0, 30, 45, 60}, 0, true);
-    private final Setting sBattery = new Setting("Battery saver", "battery_saver",
-            new String[] {"Off", "On"}, new int[] {0, 1}, 0, true);
+            new String[] {"Off", "30", "60"}, new int[] {0, 30, 60}, 0, true);
     private final Setting sMode = new Setting("Touch mode", "ui_touchpad",
             new String[] {"Direct", "Touchpad"}, new int[] {0, 1}, 0, false);
-    private final Setting sSpeed = new Setting("Cursor / camera speed", "ui_speed",
-            new String[] {"50%", "75%", "100%", "150%", "200%"}, new int[] {50, 75, 100, 150, 200}, 100, false);
-    private final Setting sSize = new Setting("Button size", "ui_scale",
-            new String[] {"80%", "100%", "120%", "140%"}, new int[] {80, 100, 120, 140}, 100, false);
-    private final Setting sOpacity = new Setting("Opacity", "ui_opacity",
-            new String[] {"40%", "60%", "80%", "100%"}, new int[] {40, 60, 80, 100}, 60, false);
+    private final Setting sSpeed = new Setting("Camera speed", "ui_speed",
+            new String[] {"Slow", "Normal", "Fast"}, new int[] {60, 100, 160}, 100, false);
     private final Setting sVibrate = new Setting("Vibration", "ui_vibrate",
             new String[] {"Off", "On"}, new int[] {0, 1}, 1, false);
     private final Setting sShowFps = new Setting("Show FPS", "ui_fps",
             new String[] {"Off", "On"}, new int[] {0, 1}, 0, false);
-    private final Setting[] settings = {sResolution, sGraphics, sTextures, sFps, sBattery, sMode, sSpeed, sSize, sOpacity, sVibrate,
-                                        sShowFps};
+    private final Setting[] settings = {sQuality, sResolution, sFps, sMode, sSpeed, sVibrate, sShowFps};
     private final RectF[] settingRects = new RectF[settings.length];
     private boolean engineChanged;
 
@@ -116,13 +108,18 @@ public class SporeControls extends View {
     private Button pressedButton;
     private boolean camLock;  // one-finger drags hold the right button (camera)
     private SporeStick stick;  // WASD movement stick (creature and tribal stages), shown with the WASD button
+    // The menu handle: one round button the player can drag anywhere (Spore's own controls sit in different
+    // corners in each stage); tapping it opens a row of buttons. Its place is kept as a fraction of the screen.
+    private final RectF handle = new RectF();
+    private float handleFx, handleFy;
+    private boolean menuOpen, handleDragged;
 
     void setStick(SporeStick s) {
         stick = s;
     }
 
     // ---- gesture state ----
-    private enum Mode { NONE, PENDING, LEFT_DRAG, CAM_DRAG, CURSOR, TWO_FINGER, BUTTON, PANEL }
+    private enum Mode { NONE, PENDING, LEFT_DRAG, CAM_DRAG, CURSOR, TWO_FINGER, BUTTON, PANEL, HANDLE }
     private Mode mode = Mode.NONE;
     private float downX, downY, lastX, lastY, lastMidX, lastMidY, lastSpan, wheelAccum;
     private float camX, camY;            // virtual pointer while rotating the camera (moves at the camera speed)
@@ -157,6 +154,8 @@ public class SporeControls extends View {
         for (int i = 0; i < settingRects.length; ++i) settingRects[i] = new RectF();
         text.setColor(Color.WHITE);
         text.setTextAlign(Paint.Align.CENTER);
+        handleFx = prefs.getFloat("ui_handle_x", 0.5f);
+        handleFy = prefs.getFloat("ui_handle_y", 0.0f);
         buttons.add(new Button("Esc", () -> key(KeyEvent.KEYCODE_ESCAPE)));
         buttons.add(new Button("Cam", () -> {
             camLock = !camLock;
@@ -168,6 +167,7 @@ public class SporeControls extends View {
             else stick.setVisibility(View.VISIBLE);
             invalidate();
         }));
+        buttons.add(new Button("Undo", SporeControls::undo));
         buttons.add(new Button("⌨", this::toggleKeyboard));
         buttons.add(new Button("⚙", () -> {
             panelOpen = true;
@@ -185,6 +185,13 @@ public class SporeControls extends View {
     private static void key(int keycode) {
         SDLActivity.onNativeKeyDown(keycode);
         SDLActivity.onNativeKeyUp(keycode);
+    }
+
+    /** Ctrl+Z: undo in the editors. */
+    private static void undo() {
+        SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_CTRL_LEFT);
+        key(KeyEvent.KEYCODE_Z);
+        SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_CTRL_LEFT);
     }
 
     private static void wheel(float steps) {
@@ -266,7 +273,14 @@ public class SporeControls extends View {
                 mode = Mode.PANEL;
                 return true;
             }
-            Button b = hitButton(x, y);
+            if (handle.contains(x, y)) {
+                mode = Mode.HANDLE;
+                handleDragged = false;
+                downX = x;
+                downY = y;
+                return true;
+            }
+            Button b = menuOpen ? hitButton(x, y) : null;
             if (b != null) {
                 pressedButton = b;
                 mode = Mode.BUTTON;
@@ -290,11 +304,32 @@ public class SporeControls extends View {
             if (action == MotionEvent.ACTION_UP) panelTap(x, y);
             return true;
         }
+        if (mode == Mode.HANDLE) {
+            if (action == MotionEvent.ACTION_MOVE && (handleDragged || Math.hypot(x - downX, y - downY) > 12 * density)) {
+                handleDragged = true;
+                handleFx = clamp(x / getWidth(), 0, 1);
+                handleFy = clamp(y / getHeight(), 0, 1);
+                invalidate();
+            } else if (action == MotionEvent.ACTION_UP) {
+                if (handleDragged) {
+                    prefs.edit().putFloat("ui_handle_x", handleFx).putFloat("ui_handle_y", handleFy).apply();
+                } else {
+                    menuOpen = !menuOpen;
+                    buzz(HapticFeedbackConstants.VIRTUAL_KEY);
+                }
+                mode = Mode.NONE;
+                invalidate();
+            }
+            return true;
+        }
         if (mode == Mode.BUTTON) {
             if (action == MotionEvent.ACTION_UP) {
                 if (pressedButton != null && pressedButton.rect.contains(x, y)) {
                     buzz(HapticFeedbackConstants.VIRTUAL_KEY);
                     pressedButton.action.run();
+                    // toggles keep the menu open; one-shot actions close it
+                    if (!pressedButton.label.equals("Cam") && !pressedButton.label.equals("WASD")) menuOpen = false;
+                    invalidate();
                 }
                 pressedButton = null;
                 mode = Mode.NONE;
@@ -344,12 +379,24 @@ public class SporeControls extends View {
                 } else if (mode == Mode.CAM_DRAG || mode == Mode.TWO_FINGER) {
                     mouse(0, UP, camX, camY);
                 }
+                if (!touchpad()) parkIfAtEdge(x, y);
                 mode = Mode.NONE;
                 invalidate();
                 return true;
             default:
                 return true;
         }
+    }
+
+    /**
+     * In the tribal, civilization and space stages the camera scrolls while the mouse rests at a screen edge. With a
+     * finger the "mouse" stays where it was lifted, so after a tap near an edge the camera kept sliding: the cursor
+     * goes back to the middle of the screen instead.
+     */
+    private void parkIfAtEdge(float x, float y) {
+        float mx = getWidth() * 0.06f, my = getHeight() * 0.08f;
+        if (x > mx && x < getWidth() - mx && y > my && y < getHeight() - my) return;
+        handler.postDelayed(() -> mouse(0, MOVE, getWidth() / 2f, getHeight() / 2f), 120);
     }
 
     private void onMove(MotionEvent e, float x, float y) {
@@ -446,6 +493,8 @@ public class SporeControls extends View {
             buzz(HapticFeedbackConstants.KEYBOARD_TAP);
             if (s.engine) {
                 writeIni(s.key, s.value());
+                // Quality also picks the texture detail: Pretty loads full textures, the others skip the top mip
+                if (s == sQuality) writeIni("texture_skip_mips", s.value() == 2 ? 0 : 1);
                 engineChanged = true;
             } else {
                 prefs.edit().putInt(s.key, s.value()).apply();
@@ -497,26 +546,52 @@ public class SporeControls extends View {
     // ---- drawing ----
     @Override
     protected void onDraw(Canvas c) {
-        float scale = sSize.value() / 100f, alpha = sOpacity.value() / 100f;
-        float size = 46 * density * scale, gap = 10 * density * scale, x = 8 * density;
-        float y = getHeight() / 2f - (buttons.size() * (size + gap) - gap) / 2;
-        text.setTextSize(15 * density * scale);
+        float size = 44 * density, gap = 8 * density, r = size / 2;
+        float hx = clamp(handleFx * getWidth(), r + 4 * density, getWidth() - r - 4 * density);
+        float hy = clamp(handleFy * getHeight(), r + 4 * density, getHeight() - r - 4 * density);
+        handle.set(hx - r, hy - r, hx + r, hy + r);
+        fill.setStyle(Paint.Style.FILL);
+        fill.setColor(menuOpen ? 0xd040d6c8 : 0x900a1a2a);
+        c.drawCircle(hx, hy, r, fill);
+        fill.setStyle(Paint.Style.STROKE);
+        fill.setStrokeWidth(2 * density);
+        fill.setColor(TEAL);
+        c.drawCircle(hx, hy, r, fill);
+        fill.setStyle(Paint.Style.FILL);
+        text.setColor(Color.WHITE);
+        text.setTextSize(20 * density);
+        c.drawText(menuOpen ? "\u00d7" : "\u2630", hx, hy + 7 * density, text);
+        // state dots: camera lock, WASD stick
+        boolean wasd = stick != null && stick.getVisibility() == View.VISIBLE;
+        if (camLock || wasd) {
+            fill.setColor(0xffffd24a);
+            if (camLock) c.drawCircle(hx - r * 0.55f, hy - r * 0.75f, 4 * density, fill);
+            if (wasd) c.drawCircle(hx + r * 0.55f, hy - r * 0.75f, 4 * density, fill);
+        }
+        // the menu row opens toward the wider side of the screen, beside the handle
+        boolean toLeft = hx > getWidth() / 2f;
+        float bx = toLeft ? hx - r - gap - size : hx + r + gap;
+        float by = hy - r;
+        text.setTextSize(14 * density);
         for (Button b : buttons) {
-            b.rect.set(x, y, x + size, y + size);
-            boolean on = (b.label.equals("Cam") && camLock)
-                    || (b.label.equals("WASD") && stick != null && stick.getVisibility() == View.VISIBLE);
+            if (!menuOpen) {
+                b.rect.setEmpty();
+                continue;
+            }
+            b.rect.set(bx, by, bx + size, by + size);
+            boolean on = (b.label.equals("Cam") && camLock) || (b.label.equals("WASD") && wasd);
             fill.setStyle(Paint.Style.FILL);
-            fill.setColor(on ? withAlpha(TEAL, 0.75f * alpha) : withAlpha(0xff0a1a2a, 0.55f * alpha));
+            fill.setColor(on ? 0xd040d6c8 : 0xc00a1a2a);
             c.drawRoundRect(b.rect, 12 * density, 12 * density, fill);
             fill.setStyle(Paint.Style.STROKE);
             fill.setStrokeWidth(1.5f * density);
-            fill.setColor(withAlpha(TEAL, 0.8f * alpha));
+            fill.setColor(TEAL);
             c.drawRoundRect(b.rect, 12 * density, 12 * density, fill);
             fill.setStyle(Paint.Style.FILL);
-            text.setColor(withAlpha(Color.WHITE, Math.max(0.5f, alpha)));
-            c.drawText(b.label, b.rect.centerX(), b.rect.centerY() + 5 * density * scale, text);
-            y += size + gap;
+            c.drawText(b.label, b.rect.centerX(), b.rect.centerY() + 5 * density, text);
+            bx += toLeft ? -(size + gap) : size + gap;
         }
+        float x = 8 * density;
         text.setColor(Color.WHITE);
         if (touchpad() && cursorX >= 0) {  // the touchpad cursor
             fill.setColor(0xccffffff);
@@ -527,14 +602,10 @@ public class SporeControls extends View {
         if (sShowFps.value() == 1) {
             text.setTextSize(13 * density);
             text.setTextAlign(Paint.Align.LEFT);
-            c.drawText(String.format(Locale.ROOT, "%.0f fps", nativeFps()), x + size + gap, 22 * density, text);
+            c.drawText(String.format(Locale.ROOT, "%.0f fps", nativeFps()), x, getHeight() - 10 * density, text);
             text.setTextAlign(Paint.Align.CENTER);
         }
         if (panelOpen) drawPanel(c);
-    }
-
-    private static int withAlpha(int color, float a) {
-        return (Math.round(Math.max(0, Math.min(1, a)) * 255) << 24) | (color & 0xffffff);
     }
 
     private void drawPanel(Canvas c) {

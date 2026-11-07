@@ -35,7 +35,7 @@ public class SporeStick extends View {
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         radius = 62 * density;
-        cx = 70 * density + radius;  // clear of SporeControls' button column
+        cx = 24 * density + radius;
         cy = h - 30 * density - radius;
         knobX = cx;
         knobY = cy;
