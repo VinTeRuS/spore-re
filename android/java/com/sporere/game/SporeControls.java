@@ -81,6 +81,9 @@ public class SporeControls extends View {
             new String[] {"540p", "600p", "720p", "900p", "1080p"}, new int[] {540, 600, 720, 900, 1080}, 600, true);
     private final Setting sFps = new Setting("FPS limit", "fps_limit",
             new String[] {"Off", "30", "60"}, new int[] {0, 30, 60}, 60, true);
+    // Off: the CPU prepares the next frame while the GPU draws (smoother on most phones); On: the game's own wait.
+    private final Setting sGpuSync = new Setting("Wait for GPU", "gpu_sync",
+            new String[] {"Off", "On"}, new int[] {0, 1}, 0, true);
     private final Setting sMode = new Setting("Touch mode", "ui_touchpad",
             new String[] {"Direct", "Touchpad"}, new int[] {0, 1}, 0, false);
     private final Setting sSpeed = new Setting("Camera speed", "ui_speed",
@@ -89,7 +92,7 @@ public class SporeControls extends View {
             new String[] {"Off", "On"}, new int[] {0, 1}, 1, false);
     private final Setting sShowFps = new Setting("Show FPS", "ui_fps",
             new String[] {"Off", "On"}, new int[] {0, 1}, 0, false);
-    private final Setting[] settings = {sQuality, sResolution, sFps, sMode, sSpeed, sVibrate, sShowFps};
+    private final Setting[] settings = {sQuality, sResolution, sFps, sGpuSync, sMode, sSpeed, sVibrate, sShowFps};
     private final RectF[] settingRects = new RectF[settings.length];
     private boolean engineChanged;
 
