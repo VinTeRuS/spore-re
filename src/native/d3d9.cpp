@@ -977,6 +977,17 @@ M(IDirect3D9, GetAdapterIdentifier) {
 }
 
 M(IDirect3DQuery9, GetData) {
+    // Spore polls an event query at the end of every frame until the GPU has finished it: the CPU and the GPU then
+    // take turns instead of working on consecutive frames at once, which on a phone (both slow) costs a lot of frame
+    // rate. Event queries answer "done" at once (gpu_sync = 1 restores the wait); DXVK still bounds how many frames
+    // the CPU may run ahead (its frame latency limit). Occlusion and other queries return their real results.
+    static const bool gpu_sync = SettingInt("gpu_sync", 0) != 0;
+    auto* q = Host<IDirect3DQuery9>(Arg(c, 0));
+    if (!gpu_sync && q->GetType() == D3DQUERYTYPE_EVENT) {
+        if (Arg(c, 1) && Arg(c, 2) >= 4) W32(Arg(c, 1), 1);  // BOOL TRUE: the event has passed
+        Return(c, uint32_t(S_OK), 4);
+        return;
+    }
     static thread_local uint32_t misses = 0;
     DWORD flags = Arg(c, 3);
     if (misses > 0) flags &= ~D3DGETDATA_FLUSH;
