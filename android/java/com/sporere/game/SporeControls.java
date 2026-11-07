@@ -197,17 +197,28 @@ public class SporeControls extends View {
      * console (Ctrl+Shift+C) with "levels -unlock", typed as text. Meant for the galaxy / main menu.
      */
     private void unlockStages() {
-        Runnable combo = () -> {
+        // Ctrl and Shift stay down while the game handles the C (sent at once, the game saw a plain C: Spore's
+        // screenshot key), then the command is typed as text.
+        Runnable comboDown = () -> {
             SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_CTRL_LEFT);
             SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_SHIFT_LEFT);
-            key(KeyEvent.KEYCODE_C);
+        };
+        Runnable comboUp = () -> {
             SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_SHIFT_LEFT);
             SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_CTRL_LEFT);
         };
-        handler.post(combo);
-        handler.postDelayed(() -> org.libsdl.app.SporeText.type("levels -unlock"), 500);
-        handler.postDelayed(() -> key(KeyEvent.KEYCODE_ENTER), 900);
-        handler.postDelayed(combo, 1500);
+        handler.post(comboDown);
+        handler.postDelayed(() -> SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_C), 150);
+        handler.postDelayed(() -> SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_C), 350);
+        handler.postDelayed(comboUp, 500);
+        handler.postDelayed(() -> org.libsdl.app.SporeText.type("levels -unlock"), 1000);
+        handler.postDelayed(() -> SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_ENTER), 1400);
+        handler.postDelayed(() -> SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_ENTER), 1550);
+        // close the console the same way
+        handler.postDelayed(comboDown, 2200);
+        handler.postDelayed(() -> SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_C), 2350);
+        handler.postDelayed(() -> SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_C), 2550);
+        handler.postDelayed(comboUp, 2700);
         android.widget.Toast.makeText(getContext(), "All stages unlocked (cheat console: levels -unlock)",
                 android.widget.Toast.LENGTH_LONG).show();
     }
