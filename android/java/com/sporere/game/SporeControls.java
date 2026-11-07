@@ -76,10 +76,11 @@ public class SporeControls extends View {
     // Engine settings (*) go to sporere.ini and apply on the next start; the others at once.
     private final Setting sQuality = new Setting("Quality", "gpu_tier",
             new String[] {"Fast", "Balanced", "Pretty"}, new int[] {0, 1, 2}, 0, true);
-    private final Setting sResolution = new Setting("UI size", "render_height",
-            new String[] {"Large", "Medium", "Small"}, new int[] {540, 600, 720}, 600, true);
+    // The game draws its interface in pixels of its resolution: a higher one is sharper, with a smaller interface.
+    private final Setting sResolution = new Setting("Resolution", "render_height",
+            new String[] {"540p", "600p", "720p", "900p", "1080p"}, new int[] {540, 600, 720, 900, 1080}, 600, true);
     private final Setting sFps = new Setting("FPS limit", "fps_limit",
-            new String[] {"Off", "30", "60"}, new int[] {0, 30, 60}, 0, true);
+            new String[] {"Off", "30", "60"}, new int[] {0, 30, 60}, 60, true);
     private final Setting sMode = new Setting("Touch mode", "ui_touchpad",
             new String[] {"Direct", "Touchpad"}, new int[] {0, 1}, 0, false);
     private final Setting sSpeed = new Setting("Camera speed", "ui_speed",
