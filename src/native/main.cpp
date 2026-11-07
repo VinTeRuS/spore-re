@@ -344,6 +344,10 @@ int main(int argc, char** argv) {
 #endif
     );
     if (!g_sdl_window) Fatal("SDL_CreateWindow: %s", SDL_GetError());
+    // Typed text reaches the game as WM_CHAR from SDL text input events. SDL disables those on phones until the
+    // on-screen keyboard is opened through SDL; the port opens it (and types the cheat console's commands) itself,
+    // so the events stay on without showing a keyboard.
+    SDL_EventState(SDL_TEXTINPUT, SDL_ENABLE);
     int window_w, window_h;
     SDL_GetWindowSize(g_sdl_window, &window_w, &window_h);
 #ifdef __ANDROID__

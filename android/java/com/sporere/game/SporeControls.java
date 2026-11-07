@@ -172,6 +172,7 @@ public class SporeControls extends View {
             invalidate();
         }));
         buttons.add(new Button("Undo", SporeControls::undo));
+        buttons.add(new Button("Stages", this::unlockStages));
         buttons.add(new Button("⌨", this::toggleKeyboard));
         buttons.add(new Button("⚙", () -> {
             panelOpen = true;
@@ -191,6 +192,26 @@ public class SporeControls extends View {
         SDLActivity.onNativeKeyUp(keycode);
     }
 
+    /**
+     * Opens every stage for a new game (normally a stage is playable only after reaching it): Spore's own cheat
+     * console (Ctrl+Shift+C) with "levels -unlock", typed as text. Meant for the galaxy / main menu.
+     */
+    private void unlockStages() {
+        Runnable combo = () -> {
+            SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_CTRL_LEFT);
+            SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_SHIFT_LEFT);
+            key(KeyEvent.KEYCODE_C);
+            SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_SHIFT_LEFT);
+            SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_CTRL_LEFT);
+        };
+        handler.post(combo);
+        handler.postDelayed(() -> org.libsdl.app.SporeText.type("levels -unlock"), 500);
+        handler.postDelayed(() -> key(KeyEvent.KEYCODE_ENTER), 900);
+        handler.postDelayed(combo, 1500);
+        android.widget.Toast.makeText(getContext(), "All stages unlocked (cheat console: levels -unlock)",
+                android.widget.Toast.LENGTH_LONG).show();
+    }
+
     /** Ctrl+Z: undo in the editors. */
     private static void undo() {
         SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_CTRL_LEFT);
@@ -202,10 +223,16 @@ public class SporeControls extends View {
         SDLActivity.onNativeMouse(0, MotionEvent.ACTION_SCROLL, 0, steps, false);
     }
 
+    /**
+     * A click the game sees whichever way it reads the mouse. Menus use the window messages, but picking things in
+     * the 3D world (stars in the galaxy, creatures, buildings) polls the button state once per frame: a press and
+     * release within one frame never shows there. So the cursor moves first (hover), the button goes down a little
+     * later and stays down for a few frames.
+     */
     private void click(float x, float y, int button) {
         mouse(0, MOVE, x, y);
-        mouse(button, DOWN, x, y);
-        mouse(0, UP, x, y);
+        handler.postDelayed(() -> mouse(button, DOWN, x, y), 35);
+        handler.postDelayed(() -> mouse(0, UP, x, y), 105);
     }
 
     private void buzz(int kind) {
