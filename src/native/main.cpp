@@ -322,7 +322,13 @@ int main(int argc, char** argv) {
     setenv("DXVK_WSI_DRIVER", "SDL2", 0);  // DXVK native: the HWNDs we pass are SDL windows
     SelectVulkanDriver();
     if (SettingInt("present_stats", 0)) setenv("DXVK_PRESENT_STATS", "1", 0);
-    if (std::string dc = Setting("dxvk_config", ""); !dc.empty()) {
+    std::string dc = Setting("dxvk_config", "");
+#ifdef __ANDROID__
+    // Spore presents without vsync (D3DPRESENT_INTERVAL_IMMEDIATE): on a phone frames then reach the screen unevenly
+    // (judder, tearing). Vsync with triple buffering paces them to the display; dxvk_config overrides it.
+    if (dc.empty()) dc = "d3d9.presentInterval = 1, d3d9.numBackBuffers = 3";
+#endif
+    if (!dc.empty()) {
         for (char& ch : dc) ch = ch == ',' ? ';' : ch;
         setenv("DXVK_CONFIG", dc.c_str(), 0);
     }

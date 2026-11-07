@@ -331,8 +331,8 @@ public class SporeControls extends View {
                 if (pressedButton != null && pressedButton.rect.contains(x, y)) {
                     buzz(HapticFeedbackConstants.VIRTUAL_KEY);
                     pressedButton.action.run();
-                    // toggles keep the menu open; one-shot actions close it
-                    if (!pressedButton.label.equals("Cam") && !pressedButton.label.equals("WASD")) menuOpen = false;
+                    // the menu stays open (Esc is often pressed twice in a row); the handle closes it, the gear
+                    // opens the settings over it
                     invalidate();
                 }
                 pressedButton = null;
