@@ -680,10 +680,23 @@ K(TerminateThread) {
     Return(c, 1, 2);
 }
 K(ExitThread) { Fatal("ExitThread(%u): not supported yet", Arg(c, 0)); }
+// Sleep(0) yields the rest of the time slice. Spore's worker threads poll for work with it; on Windows that is
+// nearly free, here each call is a sched_yield system call, and a thread that does it in a tight loop burns a core
+// (a large part of the "libc" time on the phone). After 64 calls in a row (less than 2 ms apart) the thread sleeps
+// 100 us instead, which costs a waiting worker nothing noticeable.
 K(Sleep) {
     uint32_t ms = Arg(c, 0);
-    if (ms == 0) std::this_thread::yield();
-    else std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+    if (ms == 0) {
+        static thread_local uint32_t streak = 0;
+        static thread_local std::chrono::steady_clock::time_point last;
+        auto now = std::chrono::steady_clock::now();
+        streak = now - last < std::chrono::milliseconds(2) ? streak + 1 : 0;
+        last = now;
+        if (streak > 64) std::this_thread::sleep_for(std::chrono::microseconds(100));
+        else std::this_thread::yield();
+    } else {
+        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+    }
     Return(c, 0, 1);
 }
 

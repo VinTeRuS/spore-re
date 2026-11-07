@@ -54,8 +54,13 @@ uint32_t g_engine_lo = 0, g_engine_hi = 0;
 using namespace native;
 
 extern "C" RecompFn RecompLookup(uint32_t target) {
-    static std::once_flag once;
-    std::call_once(once, BuildHash);
+    // Every indirect call (virtual methods) comes here. The table is built before guest threads start (main.cpp
+    // calls RecompLookup once at startup), so the hot path only checks the pointer; call_once's barrier per call
+    // showed up on the phone's profile.
+    if (__builtin_expect(g_hash == nullptr, 0)) {
+        static std::once_flag once;
+        std::call_once(once, BuildHash);
+    }
     for (uint32_t h = HashOf(target);; h = (h + 1) & ((1u << kHashBits) - 1)) {
         if (g_hash[h].va == target) return g_hash[h].fn;
         if (!g_hash[h].va) return nullptr;

@@ -57,7 +57,9 @@ void Report() {
             if (dladdr(reinterpret_cast<void*>(pc), &info) && info.dli_fbase &&
                 reinterpret_cast<uintptr_t>(info.dli_fbase) != g_base) {
                 const char* name = info.dli_fname ? strrchr(info.dli_fname, '/') : nullptr;
-                ++libs[name ? name + 1 : (info.dli_fname ? info.dli_fname : "?")];
+                std::string key = name ? name + 1 : (info.dli_fname ? info.dli_fname : "?");
+                if (info.dli_sname) key += std::string("!") + info.dli_sname;  // e.g. libc.so!memcpy
+                ++libs[key];
                 ++outside;
                 continue;
             }
@@ -73,6 +75,7 @@ void Report() {
         for (auto& [name, count] : libs) by_lib.push_back({count, name});
         std::sort(by_lib.rbegin(), by_lib.rend());
         std::string libline;
+        if (by_lib.size() > 40) by_lib.resize(40);
         for (auto& [count, name] : by_lib) {
             char item[96];
             snprintf(item, sizeof item, " %s:%u", name.c_str(), count);

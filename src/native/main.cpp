@@ -364,6 +364,7 @@ int main(int argc, char** argv) {
     g_engine_lo = g_engine.base;
     g_engine_hi = g_engine.base + g_engine.size;
     SetupStaticTls(main_thread);  // the main thread was attached before the exe (and its TLS template) existed
+    RecompLookup(g_engine.entry);  // builds the dispatch table before any guest thread runs
 
     StartWatchdog(&g_frames);  // counted by Present (d3d9.cpp)
     // TLS callbacks (DLL_PROCESS_ATTACH), as the Windows loader runs them before the entry point.
