@@ -19,6 +19,7 @@ import capstone
 from capstone import x86_const as X
 import pefile
 import re
+import struct
 
 # The game project using the recompiler: RECOMP_ROOT, or the working directory (commands run from its root).
 ROOT = os.path.abspath(os.environ.get("RECOMP_ROOT", os.getcwd()))
@@ -415,6 +416,61 @@ _FRAME_ACCESS_RE = re.compile(r"\b(R8|R16|R32|R64|RF32|RF64|W8|W16|W32|W64|WF32|
 _X87_CALLS = [("X87Precision(c, ", "X87PrecisionCW(r_cw, "), ("c->fpu_cw = ", "r_cw = c->fpu_cw = "),
               ("X87(c, ", "X87L("), ("X87Push(c, ", "X87PushL(r_st, &r_top, "), ("X87Pop(c)", "X87PopL(&r_top)"),
               ("X87StatusWord(c)", "X87StatusWordL(c, r_top)"), ("c->st_top", "r_top"), ("c->st[", "r_st[")]
+
+
+# Loads from a constant address inside a read-only section of the image (.rdata: float constants, tables) are folded
+# into literals: the bytes can't change at run time (no VirtualProtect in the game, nothing written there but the
+# IAT, which is excluded with the import directory and every relocated dword). Saves a memory access, and on arm64
+# an ordered (TSO) one. Filled by init_rodata(); empty = folding off (--no-fold-rodata).
+RODATA = {}  # va -> byte for foldable bytes
+_CONST_LOAD_RE = re.compile(r"\b(R8|R16|R32|R64|RF32|RF64)\(\(uint32_t\)\(0x([0-9a-f]+)u\)\)")
+_LOAD_SIZE = {"R8": 1, "R16": 2, "R32": 4, "R64": 8, "RF32": 4, "RF64": 8}
+
+
+def init_rodata(pe):
+    excluded = set()
+    dd = pe.OPTIONAL_HEADER.DATA_DIRECTORY
+    for k in (1, 12, 13):  # import directory, IAT, delay imports
+        for a in range(dd[k].VirtualAddress, dd[k].VirtualAddress + dd[k].Size):
+            excluded.add(a)
+    pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_BASERELOC"]])
+    for block in getattr(pe, "DIRECTORY_ENTRY_BASERELOC", []):
+        for e in block.entries:
+            if e.type:
+                for a in range(e.rva, e.rva + 4):
+                    excluded.add(a)
+    for sec in pe.sections:
+        if sec.Characteristics & 0x80000000 or sec.Characteristics & 0x20000000:  # writable or code
+            continue
+        name = sec.Name.rstrip(b"\0")
+        if name not in (b".rdata",):
+            continue
+        data = pe.get_data(sec.VirtualAddress, sec.Misc_VirtualSize)
+        for i, b in enumerate(data):
+            rva = sec.VirtualAddress + i
+            if rva not in excluded:
+                RODATA[BASE + rva] = b
+
+
+def _fold_load(m):
+    kind, a = m.group(1), int(m.group(2), 16)
+    n = _LOAD_SIZE[kind]
+    try:
+        raw = bytes(RODATA[a + i] for i in range(n))
+    except KeyError:
+        return m.group(0)
+    if kind == "RF32" or kind == "RF64":
+        v = struct.unpack("<f" if kind == "RF32" else "<d", raw)[0]
+        if v != v or v in (float("inf"), float("-inf")):
+            return m.group(0)
+        return f"((float){v.hex()}f)" if kind == "RF32" else f"((double){v.hex()})"
+    v = int.from_bytes(raw, "little")
+    return {"R8": f"((uint8_t)0x{v:x}u)", "R16": f"((uint16_t)0x{v:x}u)", "R32": f"((uint32_t)0x{v:x}u)",
+            "R64": f"((uint64_t)0x{v:x}ull)"}[kind]
+
+
+def fold_rodata(line):
+    return _CONST_LOAD_RE.sub(_fold_load, line) if RODATA and "(0x" in line else line
 
 
 def vector_state(body):
@@ -1557,6 +1613,8 @@ class FunctionCompiler:
             out.append(f'    RecompUnimplemented(c, 0x{t:08x}u, "branch into undecoded bytes"); return;')
         if not self.ins:
             out.append(f'    RecompUnimplemented(c, 0x{self.va:08x}u, "no decodable instruction"); return;')
+        if RODATA:
+            out = out[:2] + [fold_rodata(l) for l in out[2:]]
         if LOCALIZE:
             decl, spill, reload, x87 = vector_state("\n".join(out[2:]))
             out = out[:2] + ["    " + d for d in decl] + \
@@ -1688,6 +1746,7 @@ def main():
     ap.add_argument("--no-localize", action="store_true", help="keep general registers in the context")
     ap.add_argument("--no-dirty", action="store_true", help="spill all localized state at every call")
     ap.add_argument("--no-native", action="store_true", help="recompile NATIVE_OVERRIDES too (difftests)")
+    ap.add_argument("--no-fold-rodata", action="store_true", help="keep loads from read-only sections as memory reads")
     args = ap.parse_args()
     global LOCALIZE, DIRTY_TRACKING
     LOCALIZE = not args.no_localize
@@ -1703,6 +1762,8 @@ def main():
                      - ORIG_BASE + BASE for l in open(args.functions) if l.strip())
     pe = pefile.PE(IMAGE, fast_load=True)
     relocate_pe(pe)
+    if not args.no_fold_rodata:
+        init_rodata(pe)
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
     md.detail = True
     unsupported = collections.Counter()
