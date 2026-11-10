@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "spore/vfs.h"
 #include "spore/refpack.h"
 #include "spore/hashing.h"
@@ -23,7 +24,12 @@ void TestRefPackInvalid() {
 }
 
 void TestRealSporeData() {
-    const std::filesystem::path sporeDataDir = "/home/vinterus/.wine/drive_c/GOG Games/SPORE/Data";
+    const char* env = std::getenv("SPORE_DATA_DIR");
+    if (!env) {
+        std::cout << "[SKIP] set SPORE_DATA_DIR to the game's Data folder\n";
+        return;
+    }
+    const std::filesystem::path sporeDataDir = env;
     if (!std::filesystem::exists(sporeDataDir)) {
         std::cout << "[SKIP] Spore Data directory not found at " << sporeDataDir << "\n";
         return;
