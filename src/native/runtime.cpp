@@ -25,21 +25,28 @@ namespace native {
 namespace {
 
 constexpr int kHashBits = 18;
+// 8-byte slots (half the cache footprint of va + pointer): the function as a 32-bit offset from g_fn_base, which
+// every recompiled function in this library is within 2 GiB of.
 struct HashSlot {
     uint32_t va;
-    RecompFn fn;
+    int32_t off;
 };
 HashSlot* g_hash = nullptr;
+intptr_t g_fn_base = 0;
 
 uint32_t HashOf(uint32_t va) { return (va * 2654435761u) >> (32 - kHashBits); }
 
 void BuildHash() {
-    g_hash = static_cast<HashSlot*>(calloc(size_t(1) << kHashBits, sizeof(HashSlot)));
+    auto* hash = static_cast<HashSlot*>(calloc(size_t(1) << kHashBits, sizeof(HashSlot)));
+    g_fn_base = reinterpret_cast<intptr_t>(g_recomp_table[0].fn);
     for (uint32_t i = 0; i < g_recomp_count; ++i) {
+        intptr_t d = reinterpret_cast<intptr_t>(g_recomp_table[i].fn) - g_fn_base;
+        if (d != int32_t(d)) abort();
         uint32_t h = HashOf(g_recomp_table[i].va);
-        while (g_hash[h].va) h = (h + 1) & ((1u << kHashBits) - 1);
-        g_hash[h] = {g_recomp_table[i].va, g_recomp_table[i].fn};
+        while (hash[h].va) h = (h + 1) & ((1u << kHashBits) - 1);
+        hash[h] = {g_recomp_table[i].va, int32_t(d)};
     }
+    g_hash = hash;
 }
 
 }  // namespace
@@ -62,7 +69,7 @@ extern "C" RecompFn RecompLookup(uint32_t target) {
         std::call_once(once, BuildHash);
     }
     for (uint32_t h = HashOf(target);; h = (h + 1) & ((1u << kHashBits) - 1)) {
-        if (g_hash[h].va == target) return g_hash[h].fn;
+        if (g_hash[h].va == target) return reinterpret_cast<RecompFn>(g_fn_base + g_hash[h].off);
         if (!g_hash[h].va) return nullptr;
     }
 }

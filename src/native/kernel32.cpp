@@ -178,15 +178,22 @@ std::string HostPath(const char* win_path) {
 // Read statistics for the perf line: the engine streams music and speech from the archives with synchronous reads
 // on its I/O thread, so slow storage (shared storage goes through FUSE) shows up as audio dropouts.
 struct IoStats {
-    std::atomic<uint64_t> reads{0}, bytes{0}, slow{0}, max_us{0};
+    std::atomic<uint64_t> reads{0}, bytes{0}, slow{0}, max_us{0}, total_us{0};
+    std::atomic<uint64_t> by_size[4]{};  // reads under 4 KiB, under 64 KiB, under 1 MiB, larger
 } g_io;
 
 // "N reads, M MiB, S over 50 ms, longest X ms" since the last call.
 std::string TakeIoStats() {
-    char line[128];
-    snprintf(line, sizeof(line), "%llu reads, %llu MiB, %llu over 50 ms, longest %.1f ms",
-             (unsigned long long)g_io.reads.exchange(0), (unsigned long long)(g_io.bytes.exchange(0) >> 20),
-             (unsigned long long)g_io.slow.exchange(0), double(g_io.max_us.exchange(0)) / 1000.0);
+    char line[224];
+    unsigned long long s0 = g_io.by_size[0].exchange(0), s1 = g_io.by_size[1].exchange(0),
+                       s2 = g_io.by_size[2].exchange(0), s3 = g_io.by_size[3].exchange(0);
+    snprintf(line, sizeof(line),
+             "%llu reads (<4K %llu, <64K %llu, <1M %llu, more %llu), %llu KiB, %.0f ms reading, %llu over 50 ms, "
+             "longest %.1f ms",
+             (unsigned long long)g_io.reads.exchange(0), s0, s1, s2, s3,
+             (unsigned long long)(g_io.bytes.exchange(0) >> 10),
+             double(g_io.total_us.exchange(0)) / 1000.0, (unsigned long long)g_io.slow.exchange(0),
+             double(g_io.max_us.exchange(0)) / 1000.0);
     return line;
 }
 
@@ -264,12 +271,46 @@ bool WaitKernel(std::unique_lock<std::mutex>& lock, uint32_t ms, KObject* const*
 }
 
 // ---- files ----
+// Files opened for reading only get a block cache: the game reads its packages in many small pieces, and on a
+// phone shared storage (/sdcard) goes through FUSE, where every read() is a round trip to another process. Such
+// files keep their own position (pos); every read and seek of them goes through ReadFile/SetFilePointer here.
+constexpr uint32_t kReadBlock = 512 * 1024;
 struct File : KObject {
     File() : KObject(KType::File) {}
     ~File() override {
         if (fd >= 0) close(fd);
     }
     int fd = -1;
+    bool cached = false;
+    std::mutex mu;
+    int64_t pos = 0;
+    std::vector<uint8_t> block;
+    int64_t block_off = -1;
+    size_t block_len = 0;
+
+    // pread through the block cache (mu held). Returns bytes read or -1.
+    ssize_t CachedRead(uint8_t* dst, size_t n, int64_t off) {
+        if (n >= kReadBlock) return pread(fd, dst, n, off_t(off));
+        size_t done = 0;
+        while (done < n) {
+            int64_t at = off + int64_t(done);
+            if (block_off < 0 || at < block_off || at >= block_off + int64_t(block_len)) {
+                if (block.empty()) block.resize(kReadBlock);
+                block_off = at & ~int64_t(kReadBlock - 1);
+                ssize_t r = pread(fd, block.data(), kReadBlock, off_t(block_off));
+                if (r < 0) {
+                    block_off = -1;
+                    return done ? ssize_t(done) : -1;
+                }
+                block_len = size_t(r);
+                if (at >= block_off + int64_t(block_len)) break;  // end of file
+            }
+            size_t k = std::min(n - done, size_t(block_off + int64_t(block_len) - at));
+            memcpy(dst + done, block.data() + (at - block_off), k);
+            done += k;
+        }
+        return ssize_t(done);
+    }
 };
 
 struct Find : KObject {
@@ -387,22 +428,40 @@ void WriteSystemTime(uint32_t out, const struct tm& t, int ms) {
 }
 
 // ---- critical sections: host recursive mutexes keyed by the guest CRITICAL_SECTION address ----
+// The address map decides which mutex a CRITICAL_SECTION gets (DeleteCriticalSection keeps it). Its index is also
+// put, tagged, into the struct's LockSemaphore field (offset 16, an opaque handle the game never reads), so Enter/
+// Leave read one field and index an array instead of hashing the address on every call.
+constexpr uint32_t kCsTag = 0xc5400000u, kCsTagMask = 0xfffc0000u, kCsMax = 1u << 18;
 std::mutex g_cs_mutex;
-std::unordered_map<uint32_t, std::recursive_mutex*> g_cs;
+std::unordered_map<uint32_t, uint32_t> g_cs;  // guest address -> index in g_cs_table
+std::recursive_mutex* g_cs_table[kCsMax];
+uint32_t g_cs_count = 0;
+std::unordered_map<uint32_t, std::recursive_mutex*> g_cs_overflow;
 
 std::recursive_mutex* CriticalSectionSlow(uint32_t cs) {
     std::lock_guard<std::mutex> lock(g_cs_mutex);
-    auto& m = g_cs[cs];
-    if (!m) m = new std::recursive_mutex();
-    return m;
+    auto it = g_cs.find(cs);
+    if (it == g_cs.end()) {
+        if (g_cs_count >= kCsMax) {
+            auto& m = g_cs_overflow[cs];
+            if (!m) m = new std::recursive_mutex();
+            return m;
+        }
+        g_cs_table[g_cs_count] = new std::recursive_mutex();
+        it = g_cs.emplace(cs, g_cs_count++).first;
+    }
+    W32(cs + 16, kCsTag | it->second);
+    return g_cs_table[it->second];
 }
 
-// The mapping never changes (DeleteCriticalSection keeps the mutex), so each thread caches its lookups.
 std::recursive_mutex* CriticalSection(uint32_t cs) {
-    thread_local std::unordered_map<uint32_t, std::recursive_mutex*> cache;
-    auto& m = cache[cs];
-    if (!m) m = CriticalSectionSlow(cs);
-    return m;
+    uint32_t t = R32(cs + 16);
+    if ((t & kCsTagMask) == kCsTag) {
+        // Null while another thread's store of the table entry isn't visible yet: the slow path takes the lock.
+        std::recursive_mutex* m = __atomic_load_n(&g_cs_table[t & ~kCsTagMask], __ATOMIC_ACQUIRE);
+        if (m) return m;
+    }
+    return CriticalSectionSlow(cs);
 }
 
 // ---- TLS ----
@@ -907,6 +966,8 @@ K(CreateFileA) {
     }
     auto* f = new File();
     f->fd = fd;
+    static const bool read_cache = SettingInt("read_cache", 1) != 0;
+    f->cached = read_cache && (flags & O_ACCMODE) == O_RDONLY;
     SetLastError((disposition == 2 || disposition == 4) && existed ? ERROR_ALREADY_EXISTS : 0);
     Return(c, NewHandle(f), 7);
 }
@@ -936,11 +997,21 @@ K(ReadFile) {
         return;
     }
     auto t0 = std::chrono::steady_clock::now();
-    ssize_t r = ov ? pread(f->fd, Ptr<void>(buf), n, off_t(R32(ov + 8)) | (off_t(R32(ov + 12)) << 32))
-                   : read(f->fd, Ptr<void>(buf), n);
+    ssize_t r;
+    if (f->cached) {
+        std::lock_guard<std::mutex> lock(f->mu);
+        int64_t off = ov ? int64_t(uint64_t(R32(ov + 8)) | (uint64_t(R32(ov + 12)) << 32)) : f->pos;
+        r = f->CachedRead(Ptr<uint8_t>(buf), n, off);
+        if (!ov && r > 0) f->pos = off + r;
+    } else {
+        r = ov ? pread(f->fd, Ptr<void>(buf), n, off_t(R32(ov + 8)) | (off_t(R32(ov + 12)) << 32))
+               : read(f->fd, Ptr<void>(buf), n);
+    }
     uint64_t us = uint64_t(
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count());
     g_io.reads.fetch_add(1, std::memory_order_relaxed);
+    g_io.total_us.fetch_add(us, std::memory_order_relaxed);
+    g_io.by_size[n < 4096 ? 0 : n < 65536 ? 1 : n < (1u << 20) ? 2 : 3].fetch_add(1, std::memory_order_relaxed);
     if (r > 0) g_io.bytes.fetch_add(uint64_t(r), std::memory_order_relaxed);
     if (us > 50000) g_io.slow.fetch_add(1, std::memory_order_relaxed);
     for (uint64_t m = g_io.max_us.load(); us > m && !g_io.max_us.compare_exchange_weak(m, us);) {
@@ -978,7 +1049,17 @@ K(SetFilePointer) {
     int64_t dist = int32_t(Arg(c, 1));
     uint32_t high = Arg(c, 2);
     if (high) dist = int64_t((uint64_t(R32(high)) << 32) | Arg(c, 1));
-    off_t r = f ? lseek(f->fd, off_t(dist), int(Arg(c, 3))) : -1;  // FILE_BEGIN/CURRENT/END = SEEK_*
+    off_t r = -1;
+    if (f && f->cached) {
+        std::lock_guard<std::mutex> lock(f->mu);
+        int whence = int(Arg(c, 3));  // FILE_BEGIN/CURRENT/END = SEEK_*
+        struct stat st;
+        int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? f->pos
+                       : fstat(f->fd, &st) == 0 ? int64_t(st.st_size) : -1;
+        if (base >= 0 && base + dist >= 0) r = off_t(f->pos = base + dist);
+    } else if (f) {
+        r = lseek(f->fd, off_t(dist), int(Arg(c, 3)));
+    }
     if (r < 0) {
         SetLastError(f ? 131 : ERROR_INVALID_HANDLE);  // ERROR_NEGATIVE_SEEK
         Return(c, 0xffffffffu, 4);

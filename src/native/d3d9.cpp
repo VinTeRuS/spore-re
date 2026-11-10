@@ -27,6 +27,7 @@
 #include "win.h"
 
 namespace native {
+std::string TakeIoStats();  // kernel32.cpp: reads since the last perf line
 
 SDL_Window* g_sdl_window = nullptr;
 uint32_t HostWindow();
@@ -1042,7 +1043,8 @@ M(IDirect3DDevice9, Present) {
         auto now = std::chrono::steady_clock::now();
         double secs = std::chrono::duration<double>(now - last).count();
         if (secs >= 10.0) {
-            Log("perf: frame %llu, %.1f fps", (unsigned long long)frame, double(frame - last_frame) / secs);
+            Log("perf: frame %llu, %.1f fps; io %s", (unsigned long long)frame, double(frame - last_frame) / secs,
+                TakeIoStats().c_str());
             last = now;
             last_frame = frame;
         }
