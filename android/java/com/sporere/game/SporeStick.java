@@ -1,6 +1,7 @@
 package com.sporere.game;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.view.HapticFeedbackConstants;
@@ -11,42 +12,62 @@ import android.view.View;
 import org.libsdl.app.SDLActivity;
 
 /**
- * A movement stick for the creature and tribal stages, which walk with W/A/S/D: a ring in the lower left with a knob
- * that holds the keys of its direction (diagonals hold two), and a jump button (Space) to its right. A view of its
- * own, so a finger on the stick and another one tapping the game are separate touch streams. Shown with the WASD
- * button of SporeControls.
+ * A movement stick for the stages that walk (or pan the camera) with W/A/S/D: a ring with a knob that holds the keys
+ * of its direction (diagonals hold two), and a jump button (Space). A view of its own, so a finger on the stick and
+ * another one on the game are separate touch streams. Where both sit, how big and how opaque they are comes from
+ * the layout the player set (SporeControls' layout editor and settings: prefs "lay_stick_*", "lay_jump_*",
+ * "ui_scale", "ui_alpha").
  */
 public class SporeStick extends View {
-    private static final int TEAL = 0xff40d6c8;
+    private static final int TEAL = 0x40d6c8;
     private static final int[] KEYS = {KeyEvent.KEYCODE_W, KeyEvent.KEYCODE_A, KeyEvent.KEYCODE_S, KeyEvent.KEYCODE_D};
+    // default places, as fractions of the screen
+    static final float STICK_X = 0.13f, STICK_Y = 0.70f, JUMP_X = 0.79f, JUMP_Y = 0.84f;
+
+    /** While the layout editor runs, the stick takes no touches (the editor moves it). */
+    static boolean editing;
 
     private final float density;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final SharedPreferences prefs;
     private final boolean[] held = new boolean[4];  // W A S D
     private float cx, cy, radius, knobX, knobY, jumpX, jumpY, jumpR;
+    private int alpha = 255;
     private int stickPointer = -1, jumpPointer = -1;
 
     public SporeStick(Context context) {
         super(context);
         density = getResources().getDisplayMetrics().density;
+        prefs = context.getSharedPreferences("controls", Context.MODE_PRIVATE);
         setVisibility(GONE);
     }
 
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
-        radius = 62 * density;
-        cx = 24 * density + radius;
-        cy = h - 30 * density - radius;
+        applyLayout();
+    }
+
+    /** Re-reads the place, size and opacity from the saved layout. */
+    void applyLayout() {
+        int w = getWidth(), h = getHeight();
+        if (w == 0 || h == 0) return;
+        float scale = prefs.getInt("ui_scale", 100) / 100f;
+        alpha = Math.round(prefs.getInt("ui_alpha", 80) / 100f * 255);
+        radius = 62 * density * scale;
+        jumpR = 36 * density * scale;
+        cx = prefs.getFloat("lay_stick_x", STICK_X) * w;
+        cy = prefs.getFloat("lay_stick_y", STICK_Y) * h;
+        jumpX = prefs.getFloat("lay_jump_x", JUMP_X) * w;
+        jumpY = prefs.getFloat("lay_jump_y", JUMP_Y) * h;
         knobX = cx;
         knobY = cy;
-        jumpR = 34 * density;
-        jumpX = cx + radius + 40 * density + jumpR;
-        jumpY = cy + radius - jumpR;
+        invalidate();
     }
 
     /** Only the stick and jump areas take touches; everything else falls through to the controls below. */
     @Override
     public boolean dispatchTouchEvent(MotionEvent e) {
+        if (editing) return false;
         if (e.getActionMasked() == MotionEvent.ACTION_DOWN && !inStick(e.getX(), e.getY()) && !inJump(e.getX(), e.getY()))
             return false;
         return super.dispatchTouchEvent(e);
@@ -113,7 +134,7 @@ public class SporeStick extends View {
         }
         knobX = cx + dx;
         knobY = cy + dy;
-        float dead = radius * 0.3f;
+        float dead = radius * 0.25f;
         if (d < dead) {
             setKeys(false, false, false, false);
         } else {
@@ -143,27 +164,32 @@ public class SporeStick extends View {
         setVisibility(GONE);
     }
 
+    private int argb(int a, int rgb) {
+        return (Math.min(255, a * alpha / 255) << 24) | rgb;
+    }
+
     @Override
     protected void onDraw(Canvas c) {
+        if (editing) return;  // the editor draws the stick's outline itself
         paint.setStyle(Paint.Style.FILL);
-        paint.setColor(0x400a1a2a);
+        paint.setColor(argb(0x50, 0x0a1a2a));
         c.drawCircle(cx, cy, radius, paint);
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(2 * density);
-        paint.setColor(0x9040d6c8);
+        paint.setColor(argb(0xa0, TEAL));
         c.drawCircle(cx, cy, radius, paint);
         paint.setStyle(Paint.Style.FILL);
-        paint.setColor(stickPointer >= 0 ? 0xc040d6c8 : 0x8040d6c8);
+        paint.setColor(argb(stickPointer >= 0 ? 0xd0 : 0x90, TEAL));
         c.drawCircle(knobX, knobY, radius * 0.42f, paint);
-        paint.setColor(jumpPointer >= 0 ? 0xc040d6c8 : 0x600a1a2a);
+        paint.setColor(argb(jumpPointer >= 0 ? 0xd0 : 0x70, jumpPointer >= 0 ? TEAL : 0x0a1a2a));
         c.drawCircle(jumpX, jumpY, jumpR, paint);
         paint.setStyle(Paint.Style.STROKE);
-        paint.setColor(TEAL);
+        paint.setColor(argb(0xff, TEAL));
         c.drawCircle(jumpX, jumpY, jumpR, paint);
         paint.setStyle(Paint.Style.FILL);
-        paint.setColor(0xffffffff);
+        paint.setColor(argb(0xff, 0xffffff));
         paint.setTextAlign(Paint.Align.CENTER);
-        paint.setTextSize(13 * density);
-        c.drawText("Jump", jumpX, jumpY + 5 * density, paint);
+        paint.setTextSize(14 * density * radius / (62 * density));
+        c.drawText(SporeControls.ru() ? "Прыжок" : "Jump", jumpX, jumpY + 5 * density, paint);
     }
 }

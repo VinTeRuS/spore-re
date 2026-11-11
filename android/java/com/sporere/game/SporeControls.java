@@ -52,20 +52,24 @@ public class SporeControls extends View {
     private final SharedPreferences prefs;
 
     // ---- settings ----
-    /** A row of the settings panel; tapping it steps through the values. */
+    /** A row of the settings panel; its arrows (or a tap on the row) step through the values. */
     private static final class Setting {
-        final String label, key;
+        final String en, ruLabel, key;
         final String[] names;
         final int[] values;
         final boolean engine;  // written to sporere.ini, applies on the next start
+        final boolean ini;     // kept in sporere.ini but applied at once (FPS limit)
         int index;
 
-        Setting(String label, String key, String[] names, int[] values, int def, boolean engine) {
-            this.label = label;
+        Setting(String en, String ruLabel, String key, String[] names, int[] values, int def, boolean engine,
+                boolean ini) {
+            this.en = en;
+            this.ruLabel = ruLabel;
             this.key = key;
             this.names = names;
             this.values = values;
             this.engine = engine;
+            this.ini = ini;
             index = 0;
             for (int i = 0; i < values.length; ++i) if (values[i] == def) index = i;
         }
@@ -73,30 +77,84 @@ public class SporeControls extends View {
         int value() {
             return values[index];
         }
+
+        String label() {
+            return ru() ? ruLabel : en;
+        }
     }
 
+    private static String[] tr(String[] en, String[] ruNames) {
+        return ru() ? ruNames : en;
+    }
+
+    private static final String[] OFF_ON = tr(new String[] {"Off", "On"}, new String[] {"Выкл", "Вкл"});
     // Engine settings (*) go to sporere.ini and apply on the next start; the others at once.
-    private final Setting sQuality = new Setting("Quality", "gpu_tier",
-            new String[] {"Fast", "Balanced", "Pretty"}, new int[] {0, 1, 2}, 0, true);
+    private final Setting sQuality = new Setting("Quality", "Качество", "gpu_tier",
+            tr(new String[] {"Fast", "Balanced", "Pretty"}, new String[] {"Быстро", "Баланс", "Красиво"}),
+            new int[] {0, 1, 2}, 0, true, false);
     // The game draws its interface in pixels of its resolution: a higher one is sharper, with a smaller interface.
-    private final Setting sResolution = new Setting("Resolution", "render_height",
-            new String[] {"540p", "600p", "720p", "900p", "1080p"}, new int[] {540, 600, 720, 900, 1080}, 600, true);
-    private final Setting sFps = new Setting("FPS limit", "fps_limit",
-            new String[] {"Off", "30", "60"}, new int[] {0, 30, 60}, 60, true);
+    private final Setting sResolution = new Setting("Resolution", "Разрешение", "render_height",
+            new String[] {"540p", "600p", "720p", "900p", "1080p"}, new int[] {540, 600, 720, 900, 1080}, 600, true,
+            false);
+    private final Setting sFps = new Setting("FPS limit", "Лимит FPS", "fps_limit",
+            tr(new String[] {"Off", "30", "40", "45", "50", "60", "90", "120"},
+               new String[] {"Выкл", "30", "40", "45", "50", "60", "90", "120"}),
+            new int[] {0, 30, 40, 45, 50, 60, 90, 120}, 60, false, true);
     // Off: the CPU prepares the next frame while the GPU draws (smoother on most phones); On: the game's own wait.
-    private final Setting sGpuSync = new Setting("Wait for GPU", "gpu_sync",
-            new String[] {"Off", "On"}, new int[] {0, 1}, 0, true);
-    private final Setting sMode = new Setting("Touch mode", "ui_touchpad",
-            new String[] {"Direct", "Touchpad"}, new int[] {0, 1}, 0, false);
-    private final Setting sSpeed = new Setting("Camera speed", "ui_speed",
-            new String[] {"Slow", "Normal", "Fast"}, new int[] {60, 100, 160}, 100, false);
-    private final Setting sVibrate = new Setting("Vibration", "ui_vibrate",
-            new String[] {"Off", "On"}, new int[] {0, 1}, 1, false);
-    private final Setting sShowFps = new Setting("Show FPS", "ui_fps",
-            new String[] {"Off", "On"}, new int[] {0, 1}, 0, false);
-    private final Setting[] settings = {sQuality, sResolution, sFps, sGpuSync, sMode, sSpeed, sVibrate, sShowFps};
+    private final Setting sGpuSync = new Setting("Wait for GPU", "Ждать GPU", "gpu_sync", OFF_ON, new int[] {0, 1}, 0,
+            true, false);
+    private final Setting sShowFps = new Setting("Show FPS", "Показывать FPS", "ui_fps", OFF_ON, new int[] {0, 1}, 0,
+            false, false);
+    private final Setting sMode = new Setting("Touch mode", "Касания", "ui_touchpad",
+            tr(new String[] {"Direct", "Touchpad"}, new String[] {"Прямые", "Тачпад"}), new int[] {0, 1}, 0, false,
+            false);
+    private final Setting sSpeed = new Setting("Camera speed", "Скорость камеры", "ui_speed",
+            tr(new String[] {"Slow", "Normal", "Fast"}, new String[] {"Медленно", "Обычно", "Быстро"}),
+            new int[] {60, 100, 160}, 100, false, false);
+    private final Setting sScale = new Setting("Button size", "Размер кнопок", "ui_scale",
+            new String[] {"80%", "100%", "120%", "140%"}, new int[] {80, 100, 120, 140}, 100, false, false);
+    private final Setting sAlpha = new Setting("Button opacity", "Видимость кнопок", "ui_alpha",
+            new String[] {"40%", "60%", "80%", "100%"}, new int[] {40, 60, 80, 100}, 80, false, false);
+    private final Setting sVibrate = new Setting("Vibration", "Вибрация", "ui_vibrate", OFF_ON, new int[] {0, 1}, 1,
+            false, false);
+    // two columns in the panel: graphics, controls
+    private final Setting[] graphics = {sQuality, sResolution, sFps, sGpuSync, sShowFps};
+    private final Setting[] controlsSettings = {sMode, sSpeed, sScale, sAlpha, sVibrate};
+    private final Setting[] settings = {sQuality, sResolution, sFps, sGpuSync, sShowFps, sMode, sSpeed, sScale, sAlpha,
+            sVibrate};
     private final RectF[] settingRects = new RectF[settings.length];
     private boolean engineChanged;
+
+    /** Sets the frame rate cap at once (libmain.so, d3d9.cpp). */
+    static native void nativeSetFpsLimit(int fps);
+
+    // ---- layout editor ----
+    // Every on-screen control can be moved: the menu handle, the stick, the jump button and six slots for the
+    // stage's action buttons (1-4, Order, Select, Undo...). Places are fractions of the screen in prefs "lay_*".
+    private static final String[] SLOT_IDS = {"slot0", "slot1", "slot2", "slot3", "slot4", "slot5"};
+    private static final float[][] SLOT_DEFAULTS = {{0.94f, 0.30f}, {0.94f, 0.46f}, {0.94f, 0.62f}, {0.85f, 0.38f},
+            {0.85f, 0.54f}, {0.85f, 0.70f}};
+    private boolean editLayout;
+    private String editing;  // the element being dragged
+    private final RectF editDone = new RectF(), editReset = new RectF();
+    private final RectF panelLayout = new RectF();
+
+    private float layX(String id, float def) {
+        return prefs.getFloat("lay_" + id + "_x", def);
+    }
+
+    private float layY(String id, float def) {
+        return prefs.getFloat("lay_" + id + "_y", def);
+    }
+
+    private float scale() {
+        return sScale.value() / 100f;
+    }
+
+    private int alphaOf(int argb) {
+        int a = (argb >>> 24) * sAlpha.value() / 100;
+        return (a << 24) | (argb & 0xffffff);
+    }
 
     // ---- side buttons ----
     private static final class Button {
@@ -146,12 +204,12 @@ public class SporeControls extends View {
         return stage == Stage.CREATURE || stage == Stage.TRIBE || stage == Stage.CIV || stage == Stage.SPACE;
     }
 
-    private static boolean russian() {
+    static boolean ru() {
         return "ru".equals(Locale.getDefault().getLanguage()) || "uk".equals(Locale.getDefault().getLanguage());
     }
 
     private static String hintFor(Stage s) {
-        boolean ru = russian();
+        boolean ru = ru();
         switch (s) {
             case CELL:
                 return ru ? "Клетка: тап или веди пальцем — плыть, щипок — зум"
@@ -217,12 +275,12 @@ public class SporeControls extends View {
                 break;
             case TRIBE:
             case CIV:
-                actions.add(new Button(russian() ? "Приказ" : "Order", this::toggleRightTaps));
-                actions.add(new Button(russian() ? "Выбор" : "Select", this::armBox));
+                actions.add(new Button(ru() ? "Приказ" : "Order", this::toggleRightTaps));
+                actions.add(new Button(ru() ? "Выбор" : "Select", this::armBox));
                 break;
             case SPACE:  // tools on the number keys
                 for (int k = 1; k <= 4; ++k) actions.add(keyButton(String.valueOf(k), KeyEvent.KEYCODE_0 + k));
-                actions.add(new Button(russian() ? "Приказ" : "Order", this::toggleRightTaps));
+                actions.add(new Button(ru() ? "Приказ" : "Order", this::toggleRightTaps));
                 break;
             case EDITOR:
                 actions.add(new Button("Undo", SporeControls::undo));
@@ -263,7 +321,7 @@ public class SporeControls extends View {
     }
 
     // ---- gesture state ----
-    private enum Mode { NONE, PENDING, LEFT_DRAG, CAM_DRAG, CURSOR, TWO_FINGER, BUTTON, PANEL, HANDLE }
+    private enum Mode { NONE, PENDING, LEFT_DRAG, CAM_DRAG, CURSOR, TWO_FINGER, BUTTON, PANEL, HANDLE, EDIT }
     private Mode mode = Mode.NONE;
     private float downX, downY, lastX, lastY, lastMidX, lastMidY, lastSpan, wheelAccum;
     private float camX, camY;            // virtual pointer while rotating the camera (moves at the camera speed)
@@ -275,7 +333,8 @@ public class SporeControls extends View {
 
     // ---- overlay ----
     private boolean panelOpen;
-    private final RectF panel = new RectF(), panelClose = new RectF(), panelSupport = new RectF();
+    private final RectF panel = new RectF(), panelClose = new RectF(), panelSupport = new RectF(),
+            panelCloseBig = new RectF();
     private final Runnable fpsTick = new Runnable() {
         @Override
         public void run() {
@@ -292,7 +351,7 @@ public class SporeControls extends View {
         density = getResources().getDisplayMetrics().density;
         prefs = context.getSharedPreferences("controls", Context.MODE_PRIVATE);
         for (Setting s : settings) {
-            int v = s.engine ? readIni(s.key, s.value()) : prefs.getInt(s.key, s.value());
+            int v = s.engine || s.ini ? readIni(s.key, s.value()) : prefs.getInt(s.key, s.value());
             for (int i = 0; i < s.values.length; ++i) if (s.values[i] == v) s.index = i;
         }
         for (int i = 0; i < settingRects.length; ++i) settingRects[i] = new RectF();
@@ -452,6 +511,10 @@ public class SporeControls extends View {
         if (cursorX < 0) {
             cursorX = getWidth() / 2f;
             cursorY = getHeight() / 2f;
+        }
+        if (editLayout) {
+            onEditTouch(action, x, y);
+            return true;
         }
         if (action == MotionEvent.ACTION_DOWN) {
             longPressFired = false;
@@ -661,37 +724,183 @@ public class SporeControls extends View {
     }
 
     // ---- settings panel ----
+    private void closePanel() {
+        panelOpen = false;
+        if (engineChanged) {
+            android.widget.Toast.makeText(getContext(), ru() ? "Настройки со * применятся после перезапуска игры"
+                    : "Restart the game to apply the * settings", android.widget.Toast.LENGTH_LONG).show();
+        }
+        invalidate();
+    }
+
     private void panelTap(float x, float y) {
-        if (panelClose.contains(x, y) || !panel.contains(x, y)) {
-            panelOpen = false;
-            if (engineChanged) {
-                android.widget.Toast.makeText(getContext(), "Restart the game to apply the * settings",
-                        android.widget.Toast.LENGTH_LONG).show();
-            }
-            invalidate();
+        if (panelClose.contains(x, y) || panelCloseBig.contains(x, y) || !panel.contains(x, y)) {
+            closePanel();
             return;
         }
         if (panelSupport.contains(x, y)) {
             SetupActivity.openSupport(getContext());
             return;
         }
+        if (panelLayout.contains(x, y)) {
+            closePanel();
+            startLayoutEditor();
+            return;
+        }
         for (int i = 0; i < settings.length; ++i) {
-            if (!settingRects[i].contains(x, y)) continue;
+            RectF r = settingRects[i];
+            if (!r.contains(x, y)) continue;
             Setting s = settings[i];
-            s.index = (s.index + 1) % s.values.length;
+            // the value sits in the right part of the row between arrows: the left arrow steps back
+            boolean back = x < r.right - r.width() * 0.22f && x > r.right - r.width() * 0.48f;
+            int n = s.values.length;
+            s.index = back ? (s.index + n - 1) % n : (s.index + 1) % n;
             buzz(HapticFeedbackConstants.KEYBOARD_TAP);
-            if (s.engine) {
-                writeIni(s.key, s.value());
-                // Quality also picks the texture detail: Pretty loads full textures, the others skip the top mip
-                if (s == sQuality) writeIni("texture_skip_mips", s.value() == 2 ? 0 : 1);
-                engineChanged = true;
-            } else {
-                prefs.edit().putInt(s.key, s.value()).apply();
-                if (s == sShowFps && s.value() == 1) handler.post(fpsTick);
-            }
+            applySetting(s);
             invalidate();
             return;
         }
+    }
+
+    private void applySetting(Setting s) {
+        if (s.engine) {
+            writeIni(s.key, s.value());
+            // Quality also picks the texture detail: Pretty loads full textures, the others skip the top mip
+            if (s == sQuality) writeIni("texture_skip_mips", s.value() == 2 ? 0 : 1);
+            engineChanged = true;
+            return;
+        }
+        if (s.ini) writeIni(s.key, s.value());
+        prefs.edit().putInt(s.key, s.value()).apply();
+        if (s == sFps) {
+            try {
+                nativeSetFpsLimit(s.value());
+            } catch (UnsatisfiedLinkError ignored) {
+                // applies on the next start
+            }
+        }
+        if (s == sShowFps && s.value() == 1) handler.post(fpsTick);
+        if ((s == sScale || s == sAlpha) && stick != null) stick.applyLayout();
+    }
+
+    // ---- layout editor ----
+    private void startLayoutEditor() {
+        editLayout = true;
+        menuOpen = false;
+        SporeStick.editing = true;
+        if (stick != null) stick.invalidate();
+        invalidate();
+    }
+
+    private void stopLayoutEditor() {
+        editLayout = false;
+        SporeStick.editing = false;
+        if (stick != null) stick.applyLayout();
+        invalidate();
+    }
+
+    /** The editable elements and their places (pixels) right now: id -> {x, y, radius}. */
+    private List<Object[]> editElements() {
+        List<Object[]> out = new ArrayList<>();
+        float w = getWidth(), h = getHeight(), sc = scale();
+        out.add(new Object[] {"handle", handleFx * w, handleFy * h, 22 * density * sc, "☰"});
+        out.add(new Object[] {"stick", layX("stick", SporeStick.STICK_X) * w, layY("stick", SporeStick.STICK_Y) * h,
+                62 * density * sc, ru() ? "Стик" : "Stick"});
+        out.add(new Object[] {"jump", layX("jump", SporeStick.JUMP_X) * w, layY("jump", SporeStick.JUMP_Y) * h,
+                36 * density * sc, ru() ? "Прыжок" : "Jump"});
+        for (int i = 0; i < SLOT_IDS.length; ++i) {
+            String label = i < actions.size() ? actions.get(i).label : String.valueOf(i + 1);
+            out.add(new Object[] {SLOT_IDS[i], layX(SLOT_IDS[i], SLOT_DEFAULTS[i][0]) * w,
+                    layY(SLOT_IDS[i], SLOT_DEFAULTS[i][1]) * h, 29 * density * sc, label});
+        }
+        return out;
+    }
+
+    private void onEditTouch(int action, float x, float y) {
+        if (action == MotionEvent.ACTION_DOWN) {
+            editing = null;
+            if (editDone.contains(x, y)) {
+                stopLayoutEditor();
+                return;
+            }
+            if (editReset.contains(x, y)) {
+                SharedPreferences.Editor e = prefs.edit();
+                for (String k : prefs.getAll().keySet()) if (k.startsWith("lay_")) e.remove(k);
+                e.putFloat("ui_handle_x", 0.5f).putFloat("ui_handle_y", 0f).apply();
+                handleFx = 0.5f;
+                handleFy = 0f;
+                buzz(HapticFeedbackConstants.LONG_PRESS);
+                invalidate();
+                return;
+            }
+            float best = Float.MAX_VALUE;
+            for (Object[] el : editElements()) {
+                float d = (float) Math.hypot(x - (float) el[1], y - (float) el[2]);
+                if (d < (float) el[3] * 1.3f + 8 * density && d < best) {
+                    best = d;
+                    editing = (String) el[0];
+                }
+            }
+            return;
+        }
+        if (editing == null) return;
+        float fx = clamp(x / getWidth(), 0.02f, 0.98f), fy = clamp(y / getHeight(), 0.02f, 0.98f);
+        if (editing.equals("handle")) {
+            handleFx = fx;
+            handleFy = fy;
+        }
+        if (action == MotionEvent.ACTION_MOVE) {
+            if (!editing.equals("handle"))
+                prefs.edit().putFloat("lay_" + editing + "_x", fx).putFloat("lay_" + editing + "_y", fy).apply();
+            invalidate();
+        } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            if (editing.equals("handle"))
+                prefs.edit().putFloat("ui_handle_x", handleFx).putFloat("ui_handle_y", handleFy).apply();
+            editing = null;
+            invalidate();
+        }
+    }
+
+    private void drawEditor(Canvas c) {
+        fill.setStyle(Paint.Style.FILL);
+        fill.setColor(0x66000000);
+        c.drawRect(0, 0, getWidth(), getHeight(), fill);
+        text.setTextAlign(Paint.Align.CENTER);
+        for (Object[] el : editElements()) {
+            float x = (float) el[1], y = (float) el[2], r = (float) el[3];
+            boolean active = el[0].equals(editing);
+            fill.setStyle(Paint.Style.FILL);
+            fill.setColor(active ? 0xc040d6c8 : 0x900a1a2a);
+            c.drawCircle(x, y, r, fill);
+            fill.setStyle(Paint.Style.STROKE);
+            fill.setStrokeWidth(2 * density);
+            fill.setColor(TEAL);
+            c.drawCircle(x, y, r, fill);
+            text.setColor(Color.WHITE);
+            text.setTextSize(14 * density);
+            c.drawText((String) el[4], x, y + 5 * density, text);
+        }
+        // the bar: what to do, Done and Reset
+        float bw = 130 * density, bh = 40 * density, top = 12 * density, gap = 10 * density;
+        String title = ru() ? "Перетаскивайте кнопки" : "Drag the controls";
+        text.setTextSize(15 * density);
+        float tw = text.measureText(title) + 30 * density;
+        float total = tw + 2 * (bw + gap), left = (getWidth() - total) / 2;
+        RectF t = new RectF(left, top, left + tw, top + bh);
+        editReset.set(t.right + gap, top, t.right + gap + bw, top + bh);
+        editDone.set(editReset.right + gap, top, editReset.right + gap + bw, top + bh);
+        fill.setStyle(Paint.Style.FILL);
+        fill.setColor(0xe00b1626);
+        c.drawRoundRect(t, 12 * density, 12 * density, fill);
+        fill.setColor(0xff6a3a3a);
+        c.drawRoundRect(editReset, 12 * density, 12 * density, fill);
+        fill.setColor(0xff1d7a6a);
+        c.drawRoundRect(editDone, 12 * density, 12 * density, fill);
+        text.setColor(Color.WHITE);
+        c.drawText(title, t.centerX(), t.centerY() + 5 * density, text);
+        c.drawText(ru() ? "Сброс" : "Reset", editReset.centerX(), editReset.centerY() + 5 * density, text);
+        c.drawText(ru() ? "Готово" : "Done", editDone.centerX(), editDone.centerY() + 5 * density, text);
+        text.setTextSize(14 * density);
     }
 
     private File iniFile() {
@@ -735,13 +944,13 @@ public class SporeControls extends View {
     // ---- drawing ----
     @Override
     protected void onDraw(Canvas c) {
-        float size = 44 * density, gap = 8 * density, r = size / 2;
+        float size = 44 * density * scale(), gap = 8 * density, r = size / 2;
         float hx = clamp(handleFx * getWidth(), r + 4 * density, getWidth() - r - 4 * density);
         float hy = clamp(handleFy * getHeight(), r + 4 * density, getHeight() - r - 4 * density);
         handle.set(hx - r, hy - r, hx + r, hy + r);
         fill.setStyle(Paint.Style.FILL);
-        fill.setColor(menuOpen ? 0xd040d6c8 : 0x900a1a2a);
-        c.drawCircle(hx, hy, r, fill);
+        fill.setColor(alphaOf(menuOpen ? 0xd040d6c8 : 0x900a1a2a));
+        if (!editLayout) c.drawCircle(hx, hy, r, fill);
         fill.setStyle(Paint.Style.STROKE);
         fill.setStrokeWidth(2 * density);
         fill.setColor(TEAL);
@@ -807,85 +1016,123 @@ public class SporeControls extends View {
             c.drawText(hint, hr.centerX(), hr.centerY() + 5 * density, text);
             text.setTextSize(14 * density);
         }
+        if (editLayout) drawEditor(c);
         if (panelOpen) drawPanel(c);
     }
 
-    /** The stage's action buttons: a column at the right edge, centred vertically. */
+    /** The stage's action buttons, each in its layout slot (sized and faded per the settings). */
     private void drawActions(Canvas c, float size, float gap) {
-        if (actions.isEmpty()) return;
-        float big = size * 1.15f;
-        float total = actions.size() * big + (actions.size() - 1) * gap;
-        float bx = getWidth() - big - 14 * density, by = (getHeight() - total) / 2;
-        text.setTextSize(16 * density);
-        for (Button b : actions) {
-            b.rect.set(bx, by, bx + big, by + big);
-            boolean on = (b.action == null) ? false : ((b.label.equals("Order") || b.label.equals("Приказ")) && rightTaps)
+        if (actions.isEmpty() || editLayout) return;
+        float r = 29 * density * scale();
+        text.setTextSize(16 * density * scale());
+        for (int i = 0; i < actions.size() && i < SLOT_IDS.length; ++i) {
+            Button b = actions.get(i);
+            float x = layX(SLOT_IDS[i], SLOT_DEFAULTS[i][0]) * getWidth();
+            float y = layY(SLOT_IDS[i], SLOT_DEFAULTS[i][1]) * getHeight();
+            b.rect.set(x - r, y - r, x + r, y + r);
+            boolean on = ((b.label.equals("Order") || b.label.equals("Приказ")) && rightTaps)
                     || ((b.label.equals("Select") || b.label.equals("Выбор")) && boxArmed);
             fill.setStyle(Paint.Style.FILL);
-            fill.setColor(on ? 0xd0ffb03a : 0x900a1a2a);
+            fill.setColor(alphaOf(on ? 0xd0ffb03a : 0x900a1a2a));
             c.drawOval(b.rect, fill);
             fill.setStyle(Paint.Style.STROKE);
             fill.setStrokeWidth(2 * density);
-            fill.setColor(on ? 0xffffb03a : TEAL);
+            fill.setColor(alphaOf(on ? 0xffffb03a : 0xff40d6c8));
             c.drawOval(b.rect, fill);
             fill.setStyle(Paint.Style.FILL);
-            text.setColor(Color.WHITE);
-            c.drawText(b.label, b.rect.centerX(), b.rect.centerY() + 6 * density, text);
-            by += big + gap;
+            text.setColor(alphaOf(0xffffffff));
+            c.drawText(b.label, b.rect.centerX(), b.rect.centerY() + 6 * density * scale(), text);
         }
         text.setTextSize(14 * density);
+        text.setColor(Color.WHITE);
     }
 
     private void drawPanel(Canvas c) {
-        float w = Math.min(getWidth() - 32 * density, 640 * density);
-        float row = 38 * density, pad = 16 * density, header = 64 * density;
-        int rows = (settings.length + 1) / 2;
-        float h = header + rows * (row + 6 * density) + 70 * density;
-        float left = (getWidth() - w) / 2, top = Math.max(8 * density, (getHeight() - h) / 2);
+        float w = Math.min(getWidth() - 24 * density, 700 * density);
+        float row = 36 * density, rowGap = 6 * density, pad = 16 * density, header = 56 * density;
+        float section = 26 * density, footer = 62 * density;
+        int rows = Math.max(graphics.length, controlsSettings.length);
+        float h = header + section + rows * (row + rowGap) + footer;
+        float left = (getWidth() - w) / 2, top = Math.max(6 * density, (getHeight() - h) / 2);
         panel.set(left, top, left + w, top + h);
         fill.setStyle(Paint.Style.FILL);
-        fill.setColor(0xf00b1626);
-        c.drawRoundRect(panel, 18 * density, 18 * density, fill);
+        fill.setColor(0xf20b1626);
+        c.drawRoundRect(panel, 20 * density, 20 * density, fill);
         fill.setStyle(Paint.Style.STROKE);
-        fill.setStrokeWidth(2 * density);
-        fill.setColor(TEAL);
-        c.drawRoundRect(panel, 18 * density, 18 * density, fill);
+        fill.setStrokeWidth(1.5f * density);
+        fill.setColor(0xff2a5a6a);
+        c.drawRoundRect(panel, 20 * density, 20 * density, fill);
         fill.setStyle(Paint.Style.FILL);
-        text.setTextAlign(Paint.Align.CENTER);
-        text.setTextSize(18 * density);
-        c.drawText("⚙  Settings", panel.centerX(), top + 30 * density, text);
-        text.setTextSize(12 * density);
-        text.setColor(0xffa8c8d8);
-        c.drawText(SetupActivity.CREDIT + "   ·   * = after restart", panel.centerX(), top + 50 * density, text);
+        // header: title left, the credit under it, a close cross right
+        text.setTextAlign(Paint.Align.LEFT);
         text.setColor(Color.WHITE);
-        float colW = (w - pad * 3) / 2;
-        for (int i = 0; i < settings.length; ++i) {
-            int col = i / rows, r = i % rows;
-            float rx = left + pad + col * (colW + pad), ry = top + header + r * (row + 6 * density);
-            RectF rect = settingRects[i];
-            rect.set(rx, ry, rx + colW, ry + row);
-            fill.setColor(0xff17304a);
-            c.drawRoundRect(rect, 10 * density, 10 * density, fill);
-            Setting s = settings[i];
-            text.setTextSize(13 * density);
-            text.setTextAlign(Paint.Align.LEFT);
-            c.drawText(s.label + (s.engine ? " *" : ""), rect.left + 12 * density, rect.centerY() + 5 * density, text);
-            text.setTextAlign(Paint.Align.RIGHT);
-            text.setColor(TEAL);
-            c.drawText(s.names[s.index], rect.right - 12 * density, rect.centerY() + 5 * density, text);
-            text.setColor(Color.WHITE);
-        }
-        text.setTextAlign(Paint.Align.CENTER);
-        float by = top + h - 52 * density, bw = (w - pad * 3) / 2;
-        panelSupport.set(left + pad, by, left + pad + bw, by + 38 * density);
-        panelClose.set(left + pad * 2 + bw, by, left + pad * 2 + bw * 2, by + 38 * density);
-        fill.setColor(0xff8a3a7a);
-        c.drawRoundRect(panelSupport, 10 * density, 10 * density, fill);
-        fill.setColor(0xff1d5a6a);
+        text.setTextSize(19 * density);
+        c.drawText(ru() ? "Настройки" : "Settings", left + pad, top + 30 * density, text);
+        text.setTextSize(11 * density);
+        text.setColor(0xff8aa8b8);
+        c.drawText(SetupActivity.CREDIT + (ru() ? "   ·   * — после перезапуска" : "   ·   * = after restart"),
+                left + pad, top + 47 * density, text);
+        float cs = 34 * density;
+        panelClose.set(left + w - pad - cs, top + 12 * density, left + w - pad, top + 12 * density + cs);
+        fill.setColor(0xff1a2c3c);
         c.drawRoundRect(panelClose, 10 * density, 10 * density, fill);
+        text.setTextAlign(Paint.Align.CENTER);
+        text.setColor(Color.WHITE);
+        text.setTextSize(18 * density);
+        c.drawText("×", panelClose.centerX(), panelClose.centerY() + 6 * density, text);
+        float colW = (w - pad * 3) / 2;
+        String[] titles = {ru() ? "ГРАФИКА" : "GRAPHICS", ru() ? "УПРАВЛЕНИЕ" : "CONTROLS"};
+        Setting[][] cols = {graphics, controlsSettings};
+        for (int col = 0; col < 2; ++col) {
+            float cx = left + pad + col * (colW + pad), y = top + header;
+            text.setTextAlign(Paint.Align.LEFT);
+            text.setTextSize(11 * density);
+            text.setColor(TEAL);
+            c.drawText(titles[col], cx + 4 * density, y + 14 * density, text);
+            y += section;
+            for (Setting s : cols[col]) {
+                int i = java.util.Arrays.asList(settings).indexOf(s);
+                RectF rect = settingRects[i];
+                rect.set(cx, y, cx + colW, y + row);
+                fill.setColor(0xff142638);
+                c.drawRoundRect(rect, 10 * density, 10 * density, fill);
+                text.setTextAlign(Paint.Align.LEFT);
+                text.setTextSize(13 * density);
+                text.setColor(Color.WHITE);
+                c.drawText(s.label() + (s.engine ? " *" : ""), rect.left + 12 * density, rect.centerY() + 5 * density,
+                        text);
+                // ‹ value ›
+                float vz = rect.width() * 0.48f, vl = rect.right - vz, mid = rect.right - vz / 2;
+                text.setTextAlign(Paint.Align.CENTER);
+                text.setColor(0xff6a8a9a);
+                text.setTextSize(16 * density);
+                c.drawText("‹", vl + 12 * density, rect.centerY() + 6 * density, text);
+                c.drawText("›", rect.right - 12 * density, rect.centerY() + 6 * density, text);
+                text.setColor(TEAL);
+                text.setTextSize(13 * density);
+                c.drawText(s.names[s.index], mid, rect.centerY() + 5 * density, text);
+                y += row + rowGap;
+            }
+        }
+        // footer: layout editor, support, close
+        float by = top + h - footer + 12 * density, bh = 38 * density, bw = (w - pad * 4) / 3;
+        panelLayout.set(left + pad, by, left + pad + bw, by + bh);
+        panelSupport.set(panelLayout.right + pad, by, panelLayout.right + pad + bw, by + bh);
+        RectF closeBig = new RectF(panelSupport.right + pad, by, panelSupport.right + pad + bw, by + bh);
+        fill.setColor(0xff1d5a6a);
+        c.drawRoundRect(panelLayout, 10 * density, 10 * density, fill);
+        fill.setColor(0xff7a3a6e);
+        c.drawRoundRect(panelSupport, 10 * density, 10 * density, fill);
+        fill.setColor(0xff22384a);
+        c.drawRoundRect(closeBig, 10 * density, 10 * density, fill);
+        text.setTextAlign(Paint.Align.CENTER);
+        text.setColor(Color.WHITE);
         text.setTextSize(14 * density);
-        c.drawText("Support on Patreon", panelSupport.centerX(), panelSupport.centerY() + 5 * density, text);
-        c.drawText("Close", panelClose.centerX(), panelClose.centerY() + 5 * density, text);
+        c.drawText(ru() ? "Раскладка кнопок" : "Edit layout", panelLayout.centerX(), panelLayout.centerY() + 5 * density,
+                text);
+        c.drawText("Patreon", panelSupport.centerX(), panelSupport.centerY() + 5 * density, text);
+        c.drawText(ru() ? "Закрыть" : "Close", closeBig.centerX(), closeBig.centerY() + 5 * density, text);
+        panelCloseBig.set(closeBig);
     }
 
     /** The system back button opens the game's menu, like Esc. */

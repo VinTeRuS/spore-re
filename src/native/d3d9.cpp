@@ -31,6 +31,7 @@ namespace native {
 std::string TakeIoStats();  // kernel32.cpp: reads since the last perf line
 extern std::atomic<uint32_t> g_game_mode;  // the active game mode (UpdateGameMode, below)
 extern int g_trace_draws;                  // trace_hm_draws (TraceDraw, below)
+extern std::atomic<int> g_fps_limit;       // main.cpp: frame rate cap, 0 = none
 
 SDL_Window* g_sdl_window = nullptr;
 uint32_t HostWindow();
@@ -1011,6 +1012,9 @@ bool WaitForWindow(int seconds) {
     return false;
 }
 
+extern "C" JNIEXPORT void JNICALL Java_com_sporere_game_SporeControls_nativeSetFpsLimit(JNIEnv*, jclass, jint fps) {
+    native::g_fps_limit.store(fps > 0 ? fps : 0, std::memory_order_relaxed);
+}
 extern "C" JNIEXPORT jint JNICALL Java_com_sporere_game_SporeControls_nativeGameMode(JNIEnv*, jclass) {
     return jint(native::g_game_mode.load(std::memory_order_relaxed));
 }
@@ -1142,7 +1146,10 @@ M(IDirect3DDevice9, Present) {
     // fps_limit (sporere.ini, the settings panel's presets): frames are paced to at most that rate, which keeps a
     // phone cooler (and its clocks up longer) when the game would otherwise run unevenly above it.
     {
-        static const int limit = SettingInt("fps_limit", 0);
+        // set from sporere.ini at the first frame, then live from the settings panel (nativeSetFpsLimit)
+        static const bool init = (g_fps_limit.store(SettingInt("fps_limit", 0)), true);
+        (void)init;
+        const int limit = g_fps_limit.load(std::memory_order_relaxed);
         static auto next = std::chrono::steady_clock::now();
         if (limit > 0) {
             auto now = std::chrono::steady_clock::now();
