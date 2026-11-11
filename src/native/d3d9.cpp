@@ -29,6 +29,7 @@
 
 namespace native {
 std::string TakeIoStats();  // kernel32.cpp: reads since the last perf line
+extern std::atomic<uint32_t> g_game_mode;  // the active game mode (UpdateGameMode, below)
 
 SDL_Window* g_sdl_window = nullptr;
 uint32_t HostWindow();
