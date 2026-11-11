@@ -14,6 +14,9 @@ namespace native {
 void ClientSize(int* w, int* h);  // user32.cpp
 void PostWindowMessage(uint32_t msg, uint32_t wparam, uint32_t lparam);  // user32.cpp: to the main window
 
+// The cursor's offset (game pixels) from the SDL pointer, set by SetCursorPos (user32.cpp); see PackPoint.
+std::atomic<int> g_cursor_off_x{0}, g_cursor_off_y{0};
+
 namespace {
 
 constexpr uint32_t kWmKeyDown = 0x100, kWmKeyUp = 0x101, kWmChar = 0x102;
@@ -93,12 +96,17 @@ uint32_t ButtonState() {
 }
 
 // Window pixels -> the client coordinates the engine believes in.
+// Where the game put the cursor with SetCursorPos, as an offset (game pixels) from the SDL pointer. The game warps
+// the cursor back every frame while the right button turns the camera; warping SDL's pointer made the next touch
+// motion (absolute, from the touch controls) jump by the whole distance, and the warp itself arrived as motion: the
+// camera jerked. So SetCursorPos only moves the game's view of the cursor; motion stays smooth. A new touch (button
+// press, or a move with no button held) puts the cursor back under the finger. (g_cursor_off_*, above.)
 uint32_t PackPoint(SDL_Window* w, int x, int y) {
     int ww = 1, wh = 1, cw, ch;
     SDL_GetWindowSize(w, &ww, &wh);
     ClientSize(&cw, &ch);
-    uint32_t cx = uint32_t(x * cw / (ww ? ww : 1)) & 0xffff;
-    uint32_t cy = uint32_t(y * ch / (wh ? wh : 1)) & 0xffff;
+    uint32_t cx = uint32_t(x * cw / (ww ? ww : 1) + g_cursor_off_x.load(std::memory_order_relaxed)) & 0xffff;
+    uint32_t cy = uint32_t(y * ch / (wh ? wh : 1) + g_cursor_off_y.load(std::memory_order_relaxed)) & 0xffff;
     return cy << 16 | cx;
 }
 
@@ -211,6 +219,7 @@ void ForwardInput(const SDL_Event& e) {
             break;
         }
         case SDL_MOUSEMOTION:
+            if (!e.motion.state) g_cursor_off_x = g_cursor_off_y = 0;  // hovering: the cursor is under the finger
             g_mouse_dx += e.motion.xrel;
             g_mouse_dy += e.motion.yrel;
             if (w) Mouse(kWmMouseMove, ButtonState(), PackPoint(w, e.motion.x, e.motion.y));
@@ -218,6 +227,7 @@ void ForwardInput(const SDL_Event& e) {
         case SDL_MOUSEBUTTONDOWN:
         case SDL_MOUSEBUTTONUP: {
             bool down = e.type == SDL_MOUSEBUTTONDOWN;
+            if (down && e.button.button == SDL_BUTTON_LEFT) g_cursor_off_x = g_cursor_off_y = 0;
             uint32_t msg = e.button.button == SDL_BUTTON_LEFT    ? (down ? kWmLButtonDown : kWmLButtonUp)
                            : e.button.button == SDL_BUTTON_RIGHT ? (down ? kWmRButtonDown : kWmRButtonUp)
                            : e.button.button == SDL_BUTTON_MIDDLE ? (down ? kWmMButtonDown : kWmMButtonUp)

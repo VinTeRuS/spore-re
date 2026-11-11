@@ -18,6 +18,7 @@ namespace native {
 
 std::string GuestFormat(const char* fmt, uint32_t args);  // msvcrt.cpp: printf with guest varargs
 void ForwardInput(const SDL_Event& e);  // input.cpp
+extern std::atomic<int> g_cursor_off_x, g_cursor_off_y;  // input.cpp: where SetCursorPos put the game's cursor
 void InjectKey(SDL_Scancode sc, bool down);
 extern std::atomic<uint64_t> g_frames;  // d3d9.cpp: presented frames
 void InitInput();
@@ -541,18 +542,20 @@ U(GetCursorPos) {
     SDL_GetMouseState(&x, &y);
     int ww = 1, wh = 1;
     SDL_GetWindowSize(g_sdl_window, &ww, &wh);
-    x = x * g_width / (ww > 0 ? ww : 1);
-    y = y * g_height / (wh > 0 ? wh : 1);
+    x = x * g_width / (ww > 0 ? ww : 1) + g_cursor_off_x.load(std::memory_order_relaxed);
+    y = y * g_height / (wh > 0 ? wh : 1) + g_cursor_off_y.load(std::memory_order_relaxed);
     if (g_script_mouse.active) x = g_script_mouse.x, y = g_script_mouse.y;
     W32(Arg(c, 0), uint32_t(x));
     W32(Arg(c, 0) + 4, uint32_t(y));
     Return(c, 1, 1);
 }
+// Moves only the game's view of the cursor (input.cpp g_cursor_off_*): no SDL warp, see there.
 U(SetCursorPos) {
-    int ww = 1, wh = 1;
+    int x = 0, y = 0, ww = 1, wh = 1;
+    SDL_GetMouseState(&x, &y);
     SDL_GetWindowSize(g_sdl_window, &ww, &wh);
-    SDL_WarpMouseInWindow(g_sdl_window, int(Arg(c, 0)) * ww / (g_width > 0 ? g_width : 1),
-                          int(Arg(c, 1)) * wh / (g_height > 0 ? g_height : 1));
+    g_cursor_off_x = int32_t(Arg(c, 0)) - x * g_width / (ww > 0 ? ww : 1);
+    g_cursor_off_y = int32_t(Arg(c, 1)) - y * g_height / (wh > 0 ? wh : 1);
     Return(c, 1, 2);
 }
 U(SetCursor) { Return(c, 0, 1); }
