@@ -799,12 +799,12 @@ public class SporeControls extends View {
             text.setTextSize(15 * density);
             float w = Math.min(getWidth() - 32 * density, text.measureText(hint) + 40 * density);
             float top = 12 * density, h = 40 * density;
-            RectF r = new RectF((getWidth() - w) / 2, top, (getWidth() + w) / 2, top + h);
+            RectF hr = new RectF((getWidth() - w) / 2, top, (getWidth() + w) / 2, top + h);
             fill.setStyle(Paint.Style.FILL);
             fill.setColor(0xd00a1a2a);
-            c.drawRoundRect(r, 14 * density, 14 * density, fill);
+            c.drawRoundRect(hr, 14 * density, 14 * density, fill);
             text.setColor(Color.WHITE);
-            c.drawText(hint, r.centerX(), r.centerY() + 5 * density, text);
+            c.drawText(hint, hr.centerX(), hr.centerY() + 5 * density, text);
             text.setTextSize(14 * density);
         }
         if (panelOpen) drawPanel(c);
