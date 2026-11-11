@@ -327,6 +327,7 @@ void ToGuest(const D3DPRESENT_PARAMETERS& p, uint32_t g) {
 // ---- lock shadows ----
 struct Shadow {
     uint32_t guest = 0, capacity = 0, size = 0;
+    uint32_t offset = 0;  // buffers: where in the mirror (and the buffer) the current lock starts
     void* host = nullptr;
     bool write_back = false;
 };
@@ -363,8 +364,35 @@ void ShadowUnlock(void* object, uint32_t sub) {
     auto it = g_shadows.find({object, sub});
     if (it == g_shadows.end() || !it->second.host) return;
     Shadow& s = it->second;
-    if (s.write_back) memcpy(s.host, Ptr<void>(s.guest), s.size);
+    if (s.write_back) memcpy(s.host, Ptr<void>(s.guest + s.offset), s.size);
     s.host = nullptr;
+    s.offset = 0;
+}
+
+// Vertex and index buffers: the shadow mirrors the whole buffer and a lock at `offset` returns the mirror at that
+// offset. All the game's writes go through the mirror, so bytes a lock leaves untouched still hold what the game put
+// there earlier, as in the real buffer on Windows. (A shadow that started at each lock's offset handed the game stale
+// bytes from an earlier lock elsewhere in the buffer, and Unlock copied them over live vertices: dynamic geometry such
+// as the stamps that build planet height maps came out as long spikes.) Only the locked range is copied back.
+uint32_t BufferShadowLock(void* object, void* host, uint32_t total, uint32_t offset, uint32_t size, DWORD flags) {
+    std::lock_guard<std::recursive_mutex> lock(g_mutex);
+    Shadow& s = g_shadows[{object, 0}];
+    if (s.capacity < total) {
+        uint32_t g = HeapAlloc(total);
+        memset(Ptr<void>(g), 0, total);
+        if (s.guest) {
+            memcpy(Ptr<void>(g), Ptr<void>(s.guest), s.capacity);
+            HeapFree(s.guest);
+        }
+        s.guest = g;
+        s.capacity = total;
+    }
+    s.offset = offset;
+    s.size = size;
+    s.host = host;
+    s.write_back = !(flags & D3DLOCK_READONLY);
+    if (flags & D3DLOCK_READONLY) memcpy(Ptr<void>(s.guest + offset), host, size);  // GPU-written (ProcessVertices)
+    return s.guest + offset;
 }
 
 void ForgetShadows(void* object) {
@@ -704,6 +732,34 @@ void x_Direct3DCreate9(Ctx* c) {
 #define M(iface, method) void Manual_##iface##_##method(Ctx* c)
 
 M(IDirect3D9, GetAdapterMonitor) { Return(c, 1, 2); }
+// GetRenderTargetData: GPU results the game reads back (planet height maps among them). dump_rtd = N writes the first
+// N of them as rtd_<n>_<w>x<h>_<format>.raw (rows packed, no padding) into the working directory, for debugging.
+M(IDirect3DDevice9, GetRenderTargetData) {
+    auto* src = Unwrap<IDirect3DSurface9>(Arg(c, 1));
+    auto* dst = Unwrap<IDirect3DSurface9>(Arg(c, 2));
+    HRESULT r = Host<IDirect3DDevice9>(Arg(c, 0))->GetRenderTargetData(src, dst);
+    static const int limit = SettingInt("dump_rtd", 0);
+    static std::atomic<int> n{0};
+    D3DSURFACE_DESC d;
+    if (SUCCEEDED(r) && limit > 0 && SUCCEEDED(dst->GetDesc(&d))) {
+        int k = n.fetch_add(1);
+        D3DLOCKED_RECT lr;
+        if (k < limit && SUCCEEDED(dst->LockRect(&lr, nullptr, D3DLOCK_READONLY))) {
+            uint32_t bpp = d.Format == D3DFMT_A32B32G32R32F ? 16 : d.Format == D3DFMT_A16B16G16R16F ? 8
+                           : d.Format == D3DFMT_G32R32F ? 8 : d.Format == D3DFMT_R16F ? 2 : 4;
+            char name[96];
+            snprintf(name, sizeof name, "rtd_%03d_%ux%u_%u.raw", k, d.Width, d.Height, unsigned(d.Format));
+            if (FILE* f = fopen(name, "wb")) {
+                for (uint32_t y = 0; y < d.Height; ++y)
+                    fwrite(static_cast<const uint8_t*>(lr.pBits) + size_t(y) * size_t(lr.Pitch), 1, d.Width * bpp, f);
+                fclose(f);
+            }
+            dst->UnlockRect();
+            Log("rtd %d: %ux%u format %u pitch %d", k, d.Width, d.Height, unsigned(d.Format), lr.Pitch);
+        }
+    }
+    Return(c, uint32_t(r), 3);
+}
 M(IDirect3D9, GetAdapterDisplayMode) {
     // (this, Adapter, pMode)
     if (!OverrideModes()) {
@@ -904,6 +960,9 @@ bool WaitForWindow(int seconds) {
     return false;
 }
 
+extern "C" JNIEXPORT jint JNICALL Java_com_sporere_game_SporeControls_nativeGameMode(JNIEnv*, jclass) {
+    return jint(native::g_game_mode.load(std::memory_order_relaxed));
+}
 extern "C" JNIEXPORT jfloat JNICALL Java_com_sporere_game_SporeControls_nativeFps(JNIEnv*, jclass) {
     return native::g_fps.load(std::memory_order_relaxed);
 }
@@ -1003,6 +1062,22 @@ M(IDirect3DQuery9, GetData) {
     Return(c, uint32_t(r), 4);
 }
 
+// The game mode that is active (App::cGameModeManager, read like its GetActiveModeID): the touch controls switch
+// their layout per stage. Cell 0x1654c00, creature ..c01, tribe ..c02, civilization ..c04, space ..c05, editors
+// 0xdbdba1. Read once a frame on the game's own thread; 0 while there is none.
+std::atomic<uint32_t> g_game_mode{0};
+void UpdateGameMode() {
+    constexpr uint32_t kGameModeManager = 0x015fd8b0;  // App::IGameModeManager::Get() reads this global
+    uint32_t mode = 0, mgr = R32(kGameModeManager);
+    if (mgr >= 0x10000 && mgr < 0xfff00000u) {
+        int32_t idx = int32_t(R32(mgr + 0x28));
+        uint32_t begin = R32(mgr + 0x14), end = R32(mgr + 0x18);
+        uint32_t count = end >= begin ? (end - begin) / 24 : 0;
+        if (begin >= 0x10000 && count <= 64 && idx >= 0 && uint32_t(idx) < count) mode = R32(begin + 24 * uint32_t(idx) + 4);
+    }
+    if (mode != g_game_mode.exchange(mode, std::memory_order_relaxed)) Log("game mode: %08x", mode);
+}
+
 M(IDirect3DDevice9, Present) {
     ++g_present_count;
     uint64_t frame = g_frames.fetch_add(1, std::memory_order_relaxed) + 1;  // the watchdog's frame counter (main.cpp)
@@ -1049,6 +1124,7 @@ M(IDirect3DDevice9, Present) {
             last_frame = frame;
         }
     }
+    UpdateGameMode();
     if (!g_graves.empty()) DrainGraves(false);
     auto* dev = Host<IDirect3DDevice9>(Arg(c, 0));
     MaybeScreenshot(dev);
@@ -1340,9 +1416,9 @@ void BufferLock(Ctx* c) {
     if (SUCCEEDED(hr)) {
         Desc d;
         b->GetDesc(&d);
-        uint32_t reach = d.Size > offset ? d.Size - offset : size;
-        if (!size) size = reach;
-        W32(out, ShadowLock(b, 0, p, size, flags, reach));
+        if (offset > d.Size) offset = d.Size;
+        if (!size || offset + size > d.Size) size = d.Size - offset;  // 0: to the end of the buffer
+        W32(out, BufferShadowLock(b, p, d.Size, offset, size, flags));
     }
     Return(c, uint32_t(hr), 5);
 }
@@ -1356,6 +1432,151 @@ M(IDirect3DVertexBuffer9, Lock) { BufferLock<IDirect3DVertexBuffer9, D3DVERTEXBU
 M(IDirect3DVertexBuffer9, Unlock) { BufferUnlock<IDirect3DVertexBuffer9>(c); }
 M(IDirect3DIndexBuffer9, Lock) { BufferLock<IDirect3DIndexBuffer9, D3DINDEXBUFFER_DESC>(c); }
 M(IDirect3DIndexBuffer9, Unlock) { BufferUnlock<IDirect3DIndexBuffer9>(c); }
+
+// trace_hm_draws = N: logs the first N draws into 512x512 render targets (the planet height maps) with the vertex
+// shader constants c0-c3 and the positions of their vertices, to tell bad vertex data from bad GPU work.
+const int g_trace_draws = SettingInt("trace_hm_draws", 0);
+void TraceDraw(Ctx* c, int kind) {
+    static std::atomic<int> n{0};
+    auto* dev = Host<IDirect3DDevice9>(Arg(c, 0));
+    IDirect3DSurface9* rt = nullptr;
+    D3DSURFACE_DESC rd{};
+    if (FAILED(dev->GetRenderTarget(0, &rt)) || !rt) return;
+    rt->GetDesc(&rd);
+    rt->Release();
+    if (rd.Width != 512 || rd.Height != 512) return;
+    int k = n.fetch_add(1);
+    if (k >= g_trace_draws) return;
+    IDirect3DVertexDeclaration9* decl = nullptr;
+    D3DVERTEXELEMENT9 el[MAXD3DDECLLENGTH + 1];
+    UINT nel = 0;
+    int pos_off = -1, pos_type = -1, pos_stream = 0;
+    std::string elems;
+    if (SUCCEEDED(dev->GetVertexDeclaration(&decl)) && decl) {
+        decl->GetDeclaration(el, &nel);
+        decl->Release();
+        for (UINT i = 0; i < nel && el[i].Stream != 0xff; ++i) {
+            char e[48];
+            snprintf(e, sizeof e, " s%u+%u:t%u:u%u.%u", el[i].Stream, el[i].Offset, el[i].Type, el[i].Usage,
+                     el[i].UsageIndex);
+            elems += e;
+            if ((el[i].Usage == D3DDECLUSAGE_POSITION || el[i].Usage == D3DDECLUSAGE_POSITIONT) && pos_off < 0) {
+                pos_off = el[i].Offset;
+                pos_type = el[i].Type;
+                pos_stream = el[i].Stream;
+            }
+        }
+    }
+    float vc[16] = {};
+    dev->GetVertexShaderConstantF(0, vc, 4);
+    uint32_t prim = Arg(c, 1);
+    Log("hm draw %d kind %d prim %u args %u %u %u %u %u | decl%s | c0 %g %g %g %g c1 %g %g %g %g c2 %g %g %g %g c3 %g %g "
+        "%g %g", k, kind, prim, Arg(c, 2), Arg(c, 3), Arg(c, 4), Arg(c, 5), Arg(c, 6), elems.c_str(), vc[0], vc[1],
+        vc[2], vc[3], vc[4], vc[5], vc[6], vc[7], vc[8], vc[9], vc[10], vc[11], vc[12], vc[13], vc[14], vc[15]);
+    if (k < 40) {
+        std::string st;
+        for (DWORD s = 0; s < 4; ++s) {
+            IDirect3DBaseTexture9* t = nullptr;
+            if (FAILED(dev->GetTexture(s, &t)) || !t) continue;
+            D3DFORMAT f = D3DFMT_UNKNOWN;
+            UINT w = 0;
+            if (t->GetType() == D3DRTYPE_TEXTURE) {
+                D3DSURFACE_DESC d{};
+                static_cast<IDirect3DTexture9*>(t)->GetLevelDesc(0, &d);
+                f = d.Format;
+                w = d.Width;
+            }
+            t->Release();
+            DWORD au = 0, av = 0, bc = 0, mn = 0, mg = 0, mp = 0, srgb = 0;
+            dev->GetSamplerState(s, D3DSAMP_ADDRESSU, &au);
+            dev->GetSamplerState(s, D3DSAMP_ADDRESSV, &av);
+            dev->GetSamplerState(s, D3DSAMP_BORDERCOLOR, &bc);
+            dev->GetSamplerState(s, D3DSAMP_MINFILTER, &mn);
+            dev->GetSamplerState(s, D3DSAMP_MAGFILTER, &mg);
+            dev->GetSamplerState(s, D3DSAMP_MIPFILTER, &mp);
+            dev->GetSamplerState(s, D3DSAMP_SRGBTEXTURE, &srgb);
+            char e[160];
+            snprintf(e, sizeof e, " t%lu:fmt%u/%u addr%lu,%lu border%08lx filt%lu/%lu/%lu srgb%lu", s, unsigned(f), w, au, av,
+                     bc, mn, mg, mp, srgb);
+            st += e;
+        }
+        DWORD be = 0, sb = 0, db = 0, op = 0, sbe = 0, at = 0, cw = 0;
+        dev->GetRenderState(D3DRS_ALPHABLENDENABLE, &be);
+        dev->GetRenderState(D3DRS_SRCBLEND, &sb);
+        dev->GetRenderState(D3DRS_DESTBLEND, &db);
+        dev->GetRenderState(D3DRS_BLENDOP, &op);
+        dev->GetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, &sbe);
+        dev->GetRenderState(D3DRS_ALPHATESTENABLE, &at);
+        dev->GetRenderState(D3DRS_COLORWRITEENABLE, &cw);
+        Log("hm state %d:%s | blend %lu %lu/%lu op%lu sep%lu atest%lu cw%lx", k, st.c_str(), be, sb, db, op, sbe, at, cw);
+    }
+    if (pos_off < 0 || (pos_type != D3DDECLTYPE_FLOAT2 && pos_type != D3DDECLTYPE_FLOAT3 && pos_type != D3DDECLTYPE_FLOAT4))
+        return;
+    int comps = pos_type == D3DDECLTYPE_FLOAT2 ? 2 : pos_type == D3DDECLTYPE_FLOAT3 ? 3 : 4;
+    uint32_t base = 0, stride = 0, first = 0, count = 0;
+    if (kind == 2) {  // DrawPrimitiveUP(type, primCount, data, stride)
+        base = Arg(c, 3);
+        stride = Arg(c, 4);
+        count = 6;
+    } else if (kind == 3) {  // DrawIndexedPrimitiveUP(type, minIndex, numVertices, primCount, indices, fmt, data, stride)
+        base = Arg(c, 7);
+        stride = Arg(c, 8);
+        first = Arg(c, 2);
+        count = std::min<uint32_t>(Arg(c, 3), 8);
+    } else {
+        IDirect3DVertexBuffer9* vb = nullptr;
+        UINT off = 0, st = 0;
+        if (FAILED(dev->GetStreamSource(pos_stream, &vb, &off, &st)) || !vb) return;
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_mutex);
+            auto it = g_shadows.find({vb, 0});
+            if (it != g_shadows.end()) base = it->second.guest + off;
+        }
+        vb->Release();
+        stride = st;
+        first = kind == 0 ? Arg(c, 2) : Arg(c, 2) + Arg(c, 3);  // DrawPrimitive start / BaseVertexIndex + MinIndex
+        count = std::min<uint32_t>(kind == 0 ? 6 : Arg(c, 4), 8);
+    }
+    if (kind == 1) {
+        // DrawIndexedPrimitive(type, BaseVertexIndex, MinIndex, NumVertices, startIndex, primCount): indices from the
+        // index buffer's mirror, checked against the range the draw declares
+        IDirect3DIndexBuffer9* ib = nullptr;
+        if (SUCCEEDED(dev->GetIndices(&ib)) && ib) {
+            D3DINDEXBUFFER_DESC id{};
+            ib->GetDesc(&id);
+            uint32_t ibase = 0;
+            {
+                std::lock_guard<std::recursive_mutex> lock(g_mutex);
+                auto it = g_shadows.find({ib, 0});
+                if (it != g_shadows.end()) ibase = it->second.guest;
+            }
+            ib->Release();
+            uint32_t isz = id.Format == D3DFMT_INDEX32 ? 4 : 2, n = Arg(c, 6) * 3, lo = Arg(c, 3), hi = lo + Arg(c, 4);
+            std::string ix;
+            int out_of_range = 0;
+            for (uint32_t i = 0; ibase && i < n; ++i) {
+                uint32_t a = ibase + (Arg(c, 5) + i) * isz, v = isz == 4 ? R32(a) : R16(a);
+                if (v < lo || v >= hi) ++out_of_range;
+                if (i < 24) ix += " " + std::to_string(v);
+            }
+            Log("hm idx %d%s%s:%s", k, ibase ? "" : " (no mirror)", out_of_range ? " OUT OF RANGE" : "", ix.c_str());
+        }
+    }
+    if (!base || !stride) return;
+    std::string v;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t a = base + (first + i) * stride;
+        v += " [";
+        for (uint32_t w = 0; w + 4 <= stride && w < 64; w += 4) {
+            char t[24];
+            snprintf(t, sizeof t, w ? " %.4g" : "%.4g", RF32(a + w));
+            v += t;
+        }
+        v += "]";
+        (void)comps;
+    }
+    Log("hm verts %d stride %u:%s", k, stride, v.c_str());
+}
 
 #undef M
 

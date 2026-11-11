@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <atomic>
 #include <cstring>
 #include <ctime>
 #include <cwctype>
@@ -148,8 +149,14 @@ int GuestScan(const char* str, const char* fmt, uint32_t args, bool secure) {
         std::string len;
         if (p[0] == 'I' && p[1] == '6' && p[2] == '4') { len = "ll"; p += 3; }
         while (*p == 'l' || *p == 'h' || *p == 'L') len += *p++;
-        std::string spec(start, p);
         char conv = *p;
+        // MSVC sizes: long is 32 bits (the host's is 64), long double is a double.
+        if (len == "l" && strchr("diouxXn", conv)) len.clear();
+        if (len == "L" && strchr("eEfgGa", conv)) len = "l";
+        // "%<*><width><length>" with the adjusted length modifier
+        std::string spec = "%";
+        for (const char* q = start + 1; *q == '*' || isdigit((unsigned char)*q); ++q) spec += *q;
+        spec += len;
         if (conv == '[') {
             const char* e = p + 1;
             if (*e == '^') ++e;
@@ -245,16 +252,28 @@ int32_t& Errno() {
 
 // x87 stack access for the _CI* functions (arguments and result on the FPU stack).
 double St(Ctx* c, int i) { return c->st[(c->st_top + i) & 7]; }
-void CiUnary(Ctx* c, double (*f)(double)) {
-    c->st[c->st_top & 7] = f(St(c, 0));
+// trace_ci = N: log the first N x87 CRT helper calls (_CIsin, _CIpow, ...) with their operands, for debugging.
+void CiTrace(const char* name, double x, double y, double r, Ctx* c) {
+    static const int limit = SettingInt("trace_ci", 0);
+    static std::atomic<int> n{0};
+    if (limit > 0 && n.fetch_add(1) < limit)
+        Log("ci %s(%g, %g) = %g  top %u ret %08x", name, x, y, r, c->st_top & 7, R32(c->esp));
+}
+void CiUnaryN(Ctx* c, double (*f)(double), const char* name) {
+    double x = St(c, 0);
+    c->st[c->st_top & 7] = f(x);
+    CiTrace(name, x, 0, c->st[c->st_top & 7], c);
     c->ret_target = Pop32(c);
 }
-void CiBinary(Ctx* c, double (*f)(double, double)) {
+#define CiUnary(c, f) CiUnaryN(c, f, __func__)
+void CiBinaryN(Ctx* c, double (*f)(double, double), const char* name) {
     double y = St(c, 0), x = St(c, 1);
     c->st_top = (c->st_top + 1) & 7;  // pop
     c->st[c->st_top] = f(x, y);
+    CiTrace(name, x, y, c->st[c->st_top], c);
     c->ret_target = Pop32(c);
 }
+#define CiBinary(c, f) CiBinaryN(c, f, __func__)
 
 uint32_t WriteTm(const struct tm& t) {
     if (!g_tm) g_tm = HeapAlloc(36);
@@ -971,7 +990,7 @@ C(_finite) {
     double v = RF64(c->esp + 4);
     Return(c, std::isfinite(v) ? 1 : 0);
 }
-C(_CIsin) { c->st[c->st_top] = sin(c->st[c->st_top]); c->ret_target = Pop32(c); }
+C(_CIsin) { CiUnary(c, [](double x) { return std::sin(x); }); }
 C(_CIlog) { c->st[c->st_top] = log(c->st[c->st_top]); c->ret_target = Pop32(c); }
 // _ecvt/_fcvt(double, digits, int* decpt, int* sign): digits without the point, in a per-thread buffer.
 std::string Cvt(double v, int digits, bool fixed, int* decpt, int* sign) {

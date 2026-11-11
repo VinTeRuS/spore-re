@@ -196,12 +196,15 @@ bool IgnoreFocus() {
     return ignore;
 }
 
-// SPORERE_INPUT="<frame>:<SDL key name>,<frame>:click:<x>,<y>,...": scripted input for tests. A key is held for 5
-// frames; a click goes to client coordinates (left button down and up on consecutive frames).
+// SPORERE_INPUT="<frame>:<SDL key name>,<frame>:click:<x>,<y>,<frame>:text:<text>,...": scripted input for tests. A
+// key is held for 5 frames ("Left Ctrl+Left Shift+C" holds them together); a click goes to client coordinates (left
+// button down and up on consecutive frames); text arrives as typed characters (no commas in it).
 struct Scripted {
     uint64_t frame;
     SDL_Scancode key;
-    int x, y;  // click when key == SDL_SCANCODE_UNKNOWN
+    int x, y;  // click when key == SDL_SCANCODE_UNKNOWN and no keys/text
+    std::vector<SDL_Scancode> keys;
+    std::string text;
 };
 std::vector<Scripted> LoadScript() {
     std::vector<Scripted> out;
@@ -216,14 +219,27 @@ std::vector<Scripted> LoadScript() {
         if (all.compare(colon + 1, 6, "click:") == 0) {
             int x = 0, y = 0;
             sscanf(all.c_str() + colon + 7, "%d,%d", &x, &y);
-            out.push_back({frame, SDL_SCANCODE_UNKNOWN, x, y});
+            out.push_back({frame, SDL_SCANCODE_UNKNOWN, x, y, {}, {}});
             size_t comma = all.find(',', all.find(',', colon + 7) + 1);
             pos = comma == std::string::npos ? all.size() : comma + 1;
         } else {
             size_t comma = all.find(',', colon);
             std::string key = all.substr(colon + 1, comma == std::string::npos ? std::string::npos : comma - colon - 1);
-            out.push_back({frame, SDL_GetScancodeFromName(key.c_str()), 0, 0});
             pos = comma == std::string::npos ? all.size() : comma + 1;
+            if (key.compare(0, 5, "text:") == 0) {
+                out.push_back({frame, SDL_SCANCODE_UNKNOWN, -1, -1, {}, key.substr(5)});
+            } else if (key.find('+') != std::string::npos) {
+                Scripted s{frame, SDL_SCANCODE_UNKNOWN, -1, -1, {}, {}};
+                for (size_t a = 0; a <= key.size();) {
+                    size_t b = key.find('+', a);
+                    if (b == std::string::npos) b = key.size();
+                    s.keys.push_back(SDL_GetScancodeFromName(key.substr(a, b - a).c_str()));
+                    a = b + 1;
+                }
+                out.push_back(s);
+            } else {
+                out.push_back({frame, SDL_GetScancodeFromName(key.c_str()), 0, 0, {}, {}});
+            }
         }
     }
     return out;
@@ -239,7 +255,20 @@ void RunScript() {
     if (frame == last) return;
     last = frame;
     for (const Scripted& s : script) {
-        if (s.key != SDL_SCANCODE_UNKNOWN) {
+        if (!s.keys.empty()) {
+            // Modifiers first, the last key a frame later (games read the modifiers when the key arrives).
+            for (size_t i = 0; i < s.keys.size(); ++i) {
+                if (frame == s.frame + (i + 1 == s.keys.size() ? 2 : 0)) InjectKey(s.keys[i], true);
+                if (frame == s.frame + 8) InjectKey(s.keys[i], false);
+            }
+        } else if (!s.text.empty()) {
+            if (frame == s.frame) {
+                SDL_Event e{};
+                e.type = SDL_TEXTINPUT;
+                snprintf(e.text.text, sizeof(e.text.text), "%s", s.text.c_str());
+                ForwardInput(e);
+            }
+        } else if (s.key != SDL_SCANCODE_UNKNOWN) {
             if (frame == s.frame) InjectKey(s.key, true);
             if (frame == s.frame + 5) InjectKey(s.key, false);
         } else if (frame >= s.frame && frame <= s.frame + 30) {

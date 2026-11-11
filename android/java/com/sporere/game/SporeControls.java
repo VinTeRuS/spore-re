@@ -37,6 +37,8 @@ import java.util.Locale;
  * game's menu, "back"), Cam (one-finger drags rotate the camera while on), WASD (the movement stick), Undo (Ctrl+Z, the
  * editors), the keyboard (names) and the gear: the settings panel. Engine settings (resolution, textures, frame limit, battery
  * saver) go to sporere.ini and apply on the next start; the rest apply at once.
+ * Each stage gets its own layout (the game mode comes from libmain.so): creature: the WASD stick and ability keys 1-4;
+ * tribe and civilization: RMB (taps give orders); space: tool keys 1-4 and RMB; editors: Undo and Redo.
  */
 public class SporeControls extends View {
     private static final int LEFT = MotionEvent.BUTTON_PRIMARY, RIGHT = MotionEvent.BUTTON_SECONDARY;
@@ -122,6 +124,92 @@ public class SporeControls extends View {
         stick = s;
     }
 
+    // ---- per-stage layout ----
+    // The active game mode (libmain.so reads it from the game once a frame) picks a set of action buttons along the
+    // right edge, whether the WASD stick shows (remembered per stage once toggled) and whether taps give orders
+    // (right clicks) in the strategy stages.
+    private enum Stage { OTHER, CELL, CREATURE, TRIBE, CIV, SPACE, EDITOR }
+    private Stage stage = Stage.OTHER;
+    private final List<Button> actions = new ArrayList<>();
+    private boolean rightTaps;  // RMB button: one-finger taps are right clicks (orders to the selected units)
+
+    /** The active game mode id (App::cGameModeManager), 0 if none. */
+    static native int nativeGameMode();
+
+    private static Stage stageOf(int mode) {
+        switch (mode) {
+            case 0x1654c00: return Stage.CELL;
+            case 0x1654c01: return Stage.CREATURE;
+            case 0x1654c02: return Stage.TRIBE;
+            case 0x1654c04: return Stage.CIV;
+            case 0x1654c05: return Stage.SPACE;
+            case 0x0dbdba1: return Stage.EDITOR;
+            default: return Stage.OTHER;
+        }
+    }
+
+    private final Runnable modeTick = new Runnable() {
+        @Override
+        public void run() {
+            Stage s = Stage.OTHER;
+            try {
+                s = stageOf(nativeGameMode());
+            } catch (UnsatisfiedLinkError ignored) {
+                // the library is not loaded yet
+            }
+            if (s != stage) enterStage(s);
+            handler.postDelayed(this, 500);
+        }
+    };
+
+    private void enterStage(Stage s) {
+        stage = s;
+        rightTaps = false;
+        actions.clear();
+        switch (s) {
+            case CREATURE:  // abilities on 1-4 (attack or social, the game swaps the bar), WASD + jump on the stick
+                for (int k = 1; k <= 4; ++k) actions.add(keyButton(String.valueOf(k), KeyEvent.KEYCODE_0 + k));
+                break;
+            case TRIBE:
+            case CIV:
+                actions.add(new Button("RMB", this::toggleRightTaps));
+                break;
+            case SPACE:  // tools on the number keys
+                for (int k = 1; k <= 4; ++k) actions.add(keyButton(String.valueOf(k), KeyEvent.KEYCODE_0 + k));
+                actions.add(new Button("RMB", this::toggleRightTaps));
+                break;
+            case EDITOR:
+                actions.add(new Button("Undo", SporeControls::undo));
+                actions.add(new Button("Redo", SporeControls::redo));
+                break;
+            default:
+                break;
+        }
+        if (stick != null) {
+            boolean show = prefs.getBoolean("stick_" + s.name(), s == Stage.CREATURE);
+            if (show) stick.setVisibility(View.VISIBLE);
+            else if (stick.getVisibility() == View.VISIBLE) stick.hide();
+        }
+        invalidate();
+    }
+
+    private Button keyButton(String label, int keycode) {
+        return new Button(label, () -> {
+            SDLActivity.onNativeKeyDown(keycode);
+            handler.postDelayed(() -> SDLActivity.onNativeKeyUp(keycode), 120);
+        });
+    }
+
+    private void toggleRightTaps() {
+        rightTaps = !rightTaps;
+        invalidate();
+    }
+
+    private Button hitAction(float x, float y) {
+        for (Button b : actions) if (b.rect.contains(x, y)) return b;
+        return null;
+    }
+
     // ---- gesture state ----
     private enum Mode { NONE, PENDING, LEFT_DRAG, CAM_DRAG, CURSOR, TWO_FINGER, BUTTON, PANEL, HANDLE }
     private Mode mode = Mode.NONE;
@@ -167,8 +255,10 @@ public class SporeControls extends View {
         }));
         buttons.add(new Button("WASD", () -> {
             if (stick == null) return;
-            if (stick.getVisibility() == View.VISIBLE) stick.hide();
-            else stick.setVisibility(View.VISIBLE);
+            boolean show = stick.getVisibility() != View.VISIBLE;
+            if (show) stick.setVisibility(View.VISIBLE);
+            else stick.hide();
+            prefs.edit().putBoolean("stick_" + stage.name(), show).apply();
             invalidate();
         }));
         buttons.add(new Button("Undo", SporeControls::undo));
@@ -180,6 +270,7 @@ public class SporeControls extends View {
             invalidate();
         }));
         if (sShowFps.value() == 1) handler.post(fpsTick);
+        handler.postDelayed(modeTick, 2000);
     }
 
     // ---- input to SDL ----
@@ -227,6 +318,13 @@ public class SporeControls extends View {
     private static void undo() {
         SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_CTRL_LEFT);
         key(KeyEvent.KEYCODE_Z);
+        SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_CTRL_LEFT);
+    }
+
+    /** Ctrl+Y: redo in the editors. */
+    private static void redo() {
+        SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_CTRL_LEFT);
+        key(KeyEvent.KEYCODE_Y);
         SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_CTRL_LEFT);
     }
 
@@ -323,6 +421,7 @@ public class SporeControls extends View {
                 return true;
             }
             Button b = menuOpen ? hitButton(x, y) : null;
+            if (b == null) b = hitAction(x, y);
             if (b != null) {
                 pressedButton = b;
                 mode = Mode.BUTTON;
@@ -412,10 +511,11 @@ public class SporeControls extends View {
                 handler.removeCallbacks(longPress);
                 handler.removeCallbacks(leftDown);
                 if (!longPressFired && !moved && (mode == Mode.PENDING || mode == Mode.CURSOR)) {
+                    int button = rightTaps ? RIGHT : LEFT;
                     if (camLock) {
-                        click(px(downX), py(downY), LEFT);
+                        click(px(downX), py(downY), button);
                     } else {
-                        click(px(x), py(y), LEFT);
+                        click(px(x), py(y), button);
                     }
                     lastTapTime = System.currentTimeMillis();
                     buzz(HapticFeedbackConstants.KEYBOARD_TAP);
@@ -636,6 +736,7 @@ public class SporeControls extends View {
             c.drawText(b.label, b.rect.centerX(), b.rect.centerY() + 5 * density, text);
             bx += toLeft ? -(size + gap) : size + gap;
         }
+        drawActions(c, size, gap);
         float x = 8 * density;
         text.setColor(Color.WHITE);
         if (touchpad() && cursorX >= 0) {  // the touchpad cursor
@@ -651,6 +752,31 @@ public class SporeControls extends View {
             text.setTextAlign(Paint.Align.CENTER);
         }
         if (panelOpen) drawPanel(c);
+    }
+
+    /** The stage's action buttons: a column at the right edge, centred vertically. */
+    private void drawActions(Canvas c, float size, float gap) {
+        if (actions.isEmpty()) return;
+        float big = size * 1.15f;
+        float total = actions.size() * big + (actions.size() - 1) * gap;
+        float bx = getWidth() - big - 14 * density, by = (getHeight() - total) / 2;
+        text.setTextSize(16 * density);
+        for (Button b : actions) {
+            b.rect.set(bx, by, bx + big, by + big);
+            boolean on = b.label.equals("RMB") && rightTaps;
+            fill.setStyle(Paint.Style.FILL);
+            fill.setColor(on ? 0xd0ffb03a : 0x900a1a2a);
+            c.drawOval(b.rect, fill);
+            fill.setStyle(Paint.Style.STROKE);
+            fill.setStrokeWidth(2 * density);
+            fill.setColor(on ? 0xffffb03a : TEAL);
+            c.drawOval(b.rect, fill);
+            fill.setStyle(Paint.Style.FILL);
+            text.setColor(Color.WHITE);
+            c.drawText(b.label, b.rect.centerX(), b.rect.centerY() + 6 * density, text);
+            by += big + gap;
+        }
+        text.setTextSize(14 * density);
     }
 
     private void drawPanel(Canvas c) {
