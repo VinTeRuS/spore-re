@@ -27,19 +27,22 @@ namespace {
 constexpr uint32_t kRing = 1u << 16;
 std::atomic<uint32_t> g_head{0};
 uintptr_t g_ring[kRing];
+uintptr_t g_caller[kRing];  // return address at the sample (LR on arm64, [rsp] on x86-64): who called a leaf like memcpy
 uintptr_t g_base = 0;
 
 void OnProf(int, siginfo_t*, void* context) {
     auto* uc = static_cast<ucontext_t*>(context);
 #if defined(__aarch64__)
-    uintptr_t pc = uc->uc_mcontext.pc;
+    uintptr_t pc = uc->uc_mcontext.pc, caller = uc->uc_mcontext.regs[30];
 #elif defined(__x86_64__)
     uintptr_t pc = uc->uc_mcontext.gregs[REG_RIP];
+    uintptr_t caller = *reinterpret_cast<const uintptr_t*>(uc->uc_mcontext.gregs[REG_RSP]);
 #else
-    uintptr_t pc = 0;
+    uintptr_t pc = 0, caller = 0;
 #endif
     uint32_t i = g_head.fetch_add(1, std::memory_order_relaxed);
     g_ring[i & (kRing - 1)] = pc;
+    g_caller[i & (kRing - 1)] = caller;
 }
 
 void Report() {
@@ -50,6 +53,7 @@ void Report() {
         uint32_t n = std::min(head - seen, kRing);
         std::unordered_map<uintptr_t, uint32_t> hist;
         std::unordered_map<std::string, uint32_t> libs;  // other modules (DXVK, the GPU driver, libc), by name
+        std::unordered_map<uintptr_t, uint32_t> callers;  // libmain code that called into them (64-byte buckets)
         uint32_t outside = 0;
         for (uint32_t k = head - n; k != head; ++k) {
             uintptr_t pc = g_ring[k & (kRing - 1)];
@@ -61,6 +65,10 @@ void Report() {
                 if (info.dli_sname) key += std::string("!") + info.dli_sname;  // e.g. libc.so!memcpy
                 ++libs[key];
                 ++outside;
+                uintptr_t from = g_caller[k & (kRing - 1)];
+                Dl_info ci;
+                if (dladdr(reinterpret_cast<void*>(from), &ci) && reinterpret_cast<uintptr_t>(ci.dli_fbase) == g_base)
+                    ++callers[(from - g_base) & ~uintptr_t(63)];
                 continue;
             }
             if (pc < g_base) {
@@ -82,6 +90,17 @@ void Report() {
             libline += item;
         }
         Log("profile: other modules:%s", libline.c_str());
+        std::vector<std::pair<uint32_t, uintptr_t>> top_callers;
+        for (auto& [off, count] : callers) top_callers.push_back({count, off});
+        std::sort(top_callers.rbegin(), top_callers.rend());
+        if (top_callers.size() > 40) top_callers.resize(40);
+        std::string callline;
+        for (auto& [count, off] : top_callers) {
+            char item[48];
+            snprintf(item, sizeof item, " %lx:%u", (unsigned long)off, count);
+            callline += item;
+        }
+        Log("profile: libmain callers of other modules:%s", callline.c_str());
         std::vector<std::pair<uint32_t, uintptr_t>> top;
         for (auto& [off, count] : hist) top.push_back({count, off});
         std::sort(top.rbegin(), top.rend());

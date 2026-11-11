@@ -334,6 +334,7 @@ struct Shadow {
     bool write_back = false;
     bool buffer = false;  // a vertex/index buffer mirror (capacity = the buffer's size)
     uint32_t flags = 0;
+    bool mirror = false;  // texture level: the shadow's first `size` bytes equal the level (no copy-in needed)
 };
 std::map<std::pair<void*, uint32_t>, Shadow> g_shadows;  // (object, subresource) -> shadow
 
@@ -347,7 +348,12 @@ bool IsBlockCompressed(D3DFORMAT f) {
 // `reach`: how far the game may write from the returned pointer without harm on Windows, where it points into the
 // resource itself (buffers: to the end of the buffer, even past the locked range). The shadow covers all of it, so
 // such writes land in it instead of the guest heap next to it; only the locked `size` is copied back.
-uint32_t ShadowLock(void* object, uint32_t sub, void* host, uint32_t size, DWORD flags, uint32_t reach = 0) {
+// `whole_level`: a lock of a whole texture level that only the game writes (no render target). After the first such
+// lock the shadow holds exactly the level's bytes, so later locks skip copying the level in from GPU memory (the
+// game rewrites textures while stages load; that copy was most of the loading time on a phone). Any other kind of
+// lock, or a lock through one of the texture's surfaces (InvalidateMirrors), makes the next one copy again.
+uint32_t ShadowLock(void* object, uint32_t sub, void* host, uint32_t size, DWORD flags, uint32_t reach = 0,
+                    bool whole_level = false) {
     std::lock_guard<std::recursive_mutex> lock(g_mutex);
     Shadow& s = g_shadows[{object, sub}];
     uint32_t need = reach > size ? reach : size;
@@ -355,12 +361,27 @@ uint32_t ShadowLock(void* object, uint32_t sub, void* host, uint32_t size, DWORD
         if (s.guest) HeapFree(s.guest);
         s.guest = HeapAlloc(need);
         s.capacity = need;
+        s.mirror = false;
     }
+    bool in_sync = whole_level && s.mirror && s.size == size;
     s.size = size;
     s.host = host;
     s.write_back = !(flags & D3DLOCK_READONLY);
-    if (!(flags & (D3DLOCK_DISCARD | D3DLOCK_NOOVERWRITE))) memcpy(Ptr<void>(s.guest), host, size);
+    if (!(flags & (D3DLOCK_DISCARD | D3DLOCK_NOOVERWRITE)) && !in_sync) memcpy(Ptr<void>(s.guest), host, size);
+    s.mirror = whole_level;
     return s.guest;
+}
+
+// The texture behind `surface` was (or may be) written another way: its levels' shadows are no longer mirrors.
+void InvalidateMirrors(IDirect3DSurface9* surface) {
+    IDirect3DBaseTexture9* tex = nullptr;
+    if (FAILED(surface->GetContainer(__uuidof(IDirect3DBaseTexture9), reinterpret_cast<void**>(&tex))) || !tex) return;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_mutex);
+        for (auto it = g_shadows.lower_bound({tex, 0}); it != g_shadows.end() && it->first.first == tex; ++it)
+            it->second.mirror = false;
+    }
+    tex->Release();
 }
 
 void ShadowUnlock(void* object, uint32_t sub) {
@@ -440,11 +461,13 @@ uint32_t RectRows(const D3DSURFACE_DESC& d, const RECT* r) {
 
 // LockRect common part: D3DLOCKED_RECT in guest memory is {INT Pitch; void* pBits} (8 bytes).
 void LockRectCommon(Ctx* c, void* object, uint32_t sub, HRESULT hr, const D3DLOCKED_RECT& lr,
-                    const D3DSURFACE_DESC& desc, const RECT* rect, DWORD flags, uint32_t out, int args) {
+                    const D3DSURFACE_DESC& desc, const RECT* rect, DWORD flags, uint32_t out, int args,
+                    bool texture_level = false) {
     if (SUCCEEDED(hr)) {
         uint32_t size = uint32_t(lr.Pitch) * RectRows(desc, rect);
+        bool whole = texture_level && !rect && !(desc.Usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL));
         W32(out, uint32_t(lr.Pitch));
-        W32(out + 4, ShadowLock(object, sub, lr.pBits, size, flags));
+        W32(out + 4, ShadowLock(object, sub, lr.pBits, size, flags, 0, whole));
     }
     Return(c, uint32_t(hr), args);
 }
@@ -644,7 +667,7 @@ HRESULT AdaptedLockRect(void* tex, uint32_t sub, const TexAdapt& a, UINT level, 
         if (FAILED(hr)) return hr;
         if (!a.decode) {  // same format and size on the host: plain shadow
             W32(out, uint32_t(lr.Pitch));
-            W32(out + 4, ShadowLock(tex, sub, lr.pBits, uint32_t(lr.Pitch) * rows, flags));
+            W32(out + 4, ShadowLock(tex, sub, lr.pBits, uint32_t(lr.Pitch) * rows, flags, 0, !rect));
             return D3D_OK;
         }
     }
@@ -1228,6 +1251,7 @@ M(IDirect3DSurface9, LockRect) {
     HRESULT hr = s->LockRect(&lr, rect, Arg(c, 3));
     D3DSURFACE_DESC desc;
     s->GetDesc(&desc);
+    if (SUCCEEDED(hr) && !(Arg(c, 3) & D3DLOCK_READONLY)) InvalidateMirrors(s);  // a texture level written directly
     LockRectCommon(c, s, 0, hr, lr, desc, rect, Arg(c, 3), Arg(c, 1), 4);
 }
 M(IDirect3DSurface9, UnlockRect) {
@@ -1349,7 +1373,7 @@ M(IDirect3DTexture9, LockRect) {
     HRESULT hr = t->LockRect(level, &lr, rect, Arg(c, 4));
     D3DSURFACE_DESC desc;
     t->GetLevelDesc(level, &desc);
-    LockRectCommon(c, t, level, hr, lr, desc, rect, Arg(c, 4), Arg(c, 2), 5);
+    LockRectCommon(c, t, level, hr, lr, desc, rect, Arg(c, 4), Arg(c, 2), 5, true);
 }
 M(IDirect3DTexture9, UnlockRect) {
     auto* t = Host<IDirect3DTexture9>(Arg(c, 0));
@@ -1381,7 +1405,7 @@ M(IDirect3DCubeTexture9, LockRect) {
     HRESULT hr = t->LockRect(D3DCUBEMAP_FACES(face), level, &lr, rect, Arg(c, 5));
     D3DSURFACE_DESC desc;
     t->GetLevelDesc(level, &desc);
-    LockRectCommon(c, t, face * 64 + level, hr, lr, desc, rect, Arg(c, 5), Arg(c, 3), 6);
+    LockRectCommon(c, t, face * 64 + level, hr, lr, desc, rect, Arg(c, 5), Arg(c, 3), 6, true);
 }
 M(IDirect3DCubeTexture9, UnlockRect) {
     auto* t = Host<IDirect3DCubeTexture9>(Arg(c, 0));
