@@ -334,6 +334,7 @@ struct Shadow {
     void* host = nullptr;
     bool write_back = false;
     bool buffer = false;  // a vertex/index buffer mirror (capacity = the buffer's size)
+    bool index = false;   // an index buffer (the game's locks of those come too short)
     uint32_t flags = 0;
     bool mirror = false;  // texture level: the shadow's first `size` bytes equal the level (no copy-in needed)
 };
@@ -391,23 +392,16 @@ void ShadowUnlock(void* object, uint32_t sub) {
     if (it == g_shadows.end() || !it->second.host) return;
     Shadow& s = it->second;
     if (s.write_back) memcpy(s.host, Ptr<void>(s.guest + s.offset), s.size);
-    if (s.write_back && s.buffer) {
-        // The game writes past the range it locks: it passes index counts where Lock takes bytes (half of every
-        // 16-bit index list was missing; planet height maps were built from broken triangles, the huge spiky
-        // mountains). On Windows the pointer goes into the buffer itself, so those writes count. Bytes after the
-        // locked range that the game changed (mirror differs from the buffer) are uploaded too, up to the first run of
-        // 256 unchanged bytes.
+    if (s.write_back && s.buffer && s.index) {
+        // The game writes past the index ranges it locks: it passes index counts where Lock takes bytes (half of
+        // every 16-bit index list was missing; planet height maps were built from broken triangles, the huge spiky
+        // mountains). On Windows the pointer goes into the buffer itself, so those writes count. Index locks upload
+        // four times the locked size (32-bit indices), up to the end of the buffer. No comparison with the buffer:
+        // reading it back was slow (on a phone GPU-visible memory is uncached; it took half the CPU time in a stage).
         const uint8_t* m = Ptr<uint8_t>(s.guest + s.offset);
         uint8_t* h = static_cast<uint8_t*>(s.host);
-        uint32_t rest = s.capacity - s.offset, end = 0, same = 0;
-        for (uint32_t i = s.size; i < rest && same < 256; ++i) {
-            if (m[i] != h[i]) {
-                end = i + 1;
-                same = 0;
-            } else {
-                ++same;
-            }
-        }
+        uint32_t rest = s.capacity - s.offset;
+        uint32_t end = s.size <= rest / 4 ? s.size * 4 : rest;
         if (end > s.size) memcpy(h + s.size, m + s.size, end - s.size);
         static const bool trace = SettingInt("trace_lock_overrun", 0) != 0;
         static std::atomic<int> n{0};
@@ -424,7 +418,8 @@ void ShadowUnlock(void* object, uint32_t sub) {
 // there earlier, as in the real buffer on Windows. (A shadow that started at each lock's offset handed the game stale
 // bytes from an earlier lock elsewhere in the buffer, and Unlock copied them over live vertices: dynamic geometry such
 // as the stamps that build planet height maps came out as long spikes.) Only the locked range is copied back.
-uint32_t BufferShadowLock(void* object, void* host, uint32_t total, uint32_t offset, uint32_t size, DWORD flags) {
+uint32_t BufferShadowLock(void* object, void* host, uint32_t total, uint32_t offset, uint32_t size, DWORD flags,
+                          bool index) {
     std::lock_guard<std::recursive_mutex> lock(g_mutex);
     Shadow& s = g_shadows[{object, 0}];
     if (s.capacity < total) {
@@ -441,6 +436,7 @@ uint32_t BufferShadowLock(void* object, void* host, uint32_t total, uint32_t off
     s.size = size;
     s.host = host;
     s.buffer = true;
+    s.index = index;
     s.flags = flags;
     s.write_back = !(flags & D3DLOCK_READONLY);
     if (flags & D3DLOCK_READONLY) memcpy(Ptr<void>(s.guest + offset), host, size);  // GPU-written (ProcessVertices)
@@ -1474,7 +1470,7 @@ void BufferLock(Ctx* c) {
         b->GetDesc(&d);
         if (offset > d.Size) offset = d.Size;
         if (!size || offset + size > d.Size) size = d.Size - offset;  // 0: to the end of the buffer
-        W32(out, BufferShadowLock(b, p, d.Size, offset, size, flags));
+        W32(out, BufferShadowLock(b, p, d.Size, offset, size, flags, std::is_same<T, IDirect3DIndexBuffer9>::value));
     }
     Return(c, uint32_t(hr), 5);
 }
