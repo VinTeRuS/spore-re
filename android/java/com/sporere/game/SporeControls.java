@@ -131,7 +131,48 @@ public class SporeControls extends View {
     private enum Stage { OTHER, CELL, CREATURE, TRIBE, CIV, SPACE, EDITOR }
     private Stage stage = Stage.OTHER;
     private final List<Button> actions = new ArrayList<>();
-    private boolean rightTaps;  // RMB button: one-finger taps are right clicks (orders to the selected units)
+    private boolean rightTaps;  // Order button: one-finger taps are right clicks (orders to the selected units)
+    private boolean boxArmed;   // Select button: the next one-finger drag is a left drag (box selection)
+    private String hint;        // what the gestures do in this stage, shown for a few seconds after it starts
+    private final Runnable hideHint = () -> {
+        hint = null;
+        invalidate();
+    };
+
+    /** In the 3D stages a one-finger drag turns the camera (right drag); elsewhere it drags with the left button. */
+    private boolean dragTurnsCamera() {
+        if (camLock) return true;
+        if (boxArmed) return false;
+        return stage == Stage.CREATURE || stage == Stage.TRIBE || stage == Stage.CIV || stage == Stage.SPACE;
+    }
+
+    private static boolean russian() {
+        return "ru".equals(Locale.getDefault().getLanguage()) || "uk".equals(Locale.getDefault().getLanguage());
+    }
+
+    private static String hintFor(Stage s) {
+        boolean ru = russian();
+        switch (s) {
+            case CELL:
+                return ru ? "Клетка: тап или веди пальцем — плыть, щипок — зум"
+                          : "Cell: tap or drag to swim, pinch to zoom";
+            case CREATURE:
+                return ru ? "Существо: тап — идти / действовать, палец — камера, стик — ходьба, 1–4 — способности"
+                          : "Creature: tap to walk / act, drag to turn the camera, stick to walk, 1-4 abilities";
+            case TRIBE:
+            case CIV:
+                return ru ? "Тап — выбрать, «Приказ» + тап — приказ, «Выбор» + палец — рамка, стик — камера"
+                          : "Tap to select, Order + tap to command, Select + drag for a box, stick moves the camera";
+            case SPACE:
+                return ru ? "Космос: тап — лететь / выбрать, палец — камера, 1–4 — инструменты, «Приказ» — правый клик"
+                          : "Space: tap to fly / pick, drag to turn the camera, 1-4 tools, Order = right click";
+            case EDITOR:
+                return ru ? "Редактор: тяни детали пальцем, два пальца — камера, щипок — зум"
+                          : "Editor: drag parts, two fingers turn the camera, pinch to zoom";
+            default:
+                return null;
+        }
+    }
 
     /** The active game mode id (App::cGameModeManager), 0 if none. */
     static native int nativeGameMode();
@@ -165,18 +206,23 @@ public class SporeControls extends View {
     private void enterStage(Stage s) {
         stage = s;
         rightTaps = false;
+        boxArmed = false;
         actions.clear();
+        hint = hintFor(s);
+        handler.removeCallbacks(hideHint);
+        if (hint != null) handler.postDelayed(hideHint, 6000);
         switch (s) {
             case CREATURE:  // abilities on 1-4 (attack or social, the game swaps the bar), WASD + jump on the stick
                 for (int k = 1; k <= 4; ++k) actions.add(keyButton(String.valueOf(k), KeyEvent.KEYCODE_0 + k));
                 break;
             case TRIBE:
             case CIV:
-                actions.add(new Button("RMB", this::toggleRightTaps));
+                actions.add(new Button(russian() ? "Приказ" : "Order", this::toggleRightTaps));
+                actions.add(new Button(russian() ? "Выбор" : "Select", this::armBox));
                 break;
             case SPACE:  // tools on the number keys
                 for (int k = 1; k <= 4; ++k) actions.add(keyButton(String.valueOf(k), KeyEvent.KEYCODE_0 + k));
-                actions.add(new Button("RMB", this::toggleRightTaps));
+                actions.add(new Button(russian() ? "Приказ" : "Order", this::toggleRightTaps));
                 break;
             case EDITOR:
                 actions.add(new Button("Undo", SporeControls::undo));
@@ -186,7 +232,8 @@ public class SporeControls extends View {
                 break;
         }
         if (stick != null) {
-            boolean show = prefs.getBoolean("stick_" + s.name(), s == Stage.CREATURE);
+            boolean show = prefs.getBoolean("stick_" + s.name(),
+                    s == Stage.CREATURE || s == Stage.TRIBE || s == Stage.CIV);
             if (show) stick.setVisibility(View.VISIBLE);
             else if (stick.getVisibility() == View.VISIBLE) stick.hide();
         }
@@ -202,6 +249,11 @@ public class SporeControls extends View {
 
     private void toggleRightTaps() {
         rightTaps = !rightTaps;
+        invalidate();
+    }
+
+    private void armBox() {
+        boxArmed = !boxArmed;
         invalidate();
     }
 
@@ -249,10 +301,6 @@ public class SporeControls extends View {
         handleFx = prefs.getFloat("ui_handle_x", 0.5f);
         handleFy = prefs.getFloat("ui_handle_y", 0.0f);
         buttons.add(new Button("Esc", () -> key(KeyEvent.KEYCODE_ESCAPE)));
-        buttons.add(new Button("Cam", () -> {
-            camLock = !camLock;
-            invalidate();
-        }));
         buttons.add(new Button("WASD", () -> {
             if (stick == null) return;
             boolean show = stick.getVisibility() != View.VISIBLE;
@@ -261,7 +309,6 @@ public class SporeControls extends View {
             prefs.edit().putBoolean("stick_" + stage.name(), show).apply();
             invalidate();
         }));
-        buttons.add(new Button("Undo", SporeControls::undo));
         buttons.add(new Button("Stages", this::unlockStages));
         buttons.add(new Button("⌨", this::toggleKeyboard));
         buttons.add(new Button("⚙", () -> {
@@ -376,7 +423,7 @@ public class SporeControls extends View {
     private void startLeft() {
         if (mode != Mode.PENDING) return;
         handler.removeCallbacks(longPress);
-        if (camLock) {
+        if (dragTurnsCamera()) {
             mode = Mode.CAM_DRAG;
             camX = px(downX);
             camY = py(downY);
@@ -436,10 +483,10 @@ public class SporeControls extends View {
                 startLeft();
                 return true;
             }
-            mode = touchpad() && !camLock ? Mode.CURSOR : Mode.PENDING;
+            mode = touchpad() && !dragTurnsCamera() ? Mode.CURSOR : Mode.PENDING;
             // direct mode: the cursor goes under the finger at once, so the game sees it hover over what will be
             // tapped for as long as the finger rests (3D picking needs a few frames of hover before the press)
-            if (!touchpad() && !camLock) mouse(0, MOVE, x, y);
+            if (!touchpad()) mouse(0, MOVE, x, y);
             if (mode == Mode.PENDING && !touchpad()) handler.postDelayed(leftDown, LEFT_DELAY_MS * 3);
             handler.postDelayed(longPress, LONG_PRESS_MS);
             return true;
@@ -512,15 +559,12 @@ public class SporeControls extends View {
                 handler.removeCallbacks(leftDown);
                 if (!longPressFired && !moved && (mode == Mode.PENDING || mode == Mode.CURSOR)) {
                     int button = rightTaps ? RIGHT : LEFT;
-                    if (camLock) {
-                        click(px(downX), py(downY), button);
-                    } else {
-                        click(px(x), py(y), button);
-                    }
+                    click(px(x), py(y), button);
                     lastTapTime = System.currentTimeMillis();
                     buzz(HapticFeedbackConstants.KEYBOARD_TAP);
                 } else if (mode == Mode.LEFT_DRAG) {
                     mouse(0, UP, px(x), py(y));
+                    boxArmed = false;  // the Select button arms one box drag
                 } else if (mode == Mode.CAM_DRAG || mode == Mode.TWO_FINGER) {
                     mouse(0, UP, camX, camY);
                 }
@@ -751,6 +795,18 @@ public class SporeControls extends View {
             c.drawText(String.format(Locale.ROOT, "%.0f fps", nativeFps()), x, getHeight() - 10 * density, text);
             text.setTextAlign(Paint.Align.CENTER);
         }
+        if (hint != null && !panelOpen) {
+            text.setTextSize(15 * density);
+            float w = Math.min(getWidth() - 32 * density, text.measureText(hint) + 40 * density);
+            float top = 12 * density, h = 40 * density;
+            RectF r = new RectF((getWidth() - w) / 2, top, (getWidth() + w) / 2, top + h);
+            fill.setStyle(Paint.Style.FILL);
+            fill.setColor(0xd00a1a2a);
+            c.drawRoundRect(r, 14 * density, 14 * density, fill);
+            text.setColor(Color.WHITE);
+            c.drawText(hint, r.centerX(), r.centerY() + 5 * density, text);
+            text.setTextSize(14 * density);
+        }
         if (panelOpen) drawPanel(c);
     }
 
@@ -763,7 +819,8 @@ public class SporeControls extends View {
         text.setTextSize(16 * density);
         for (Button b : actions) {
             b.rect.set(bx, by, bx + big, by + big);
-            boolean on = b.label.equals("RMB") && rightTaps;
+            boolean on = (b.action == null) ? false : ((b.label.equals("Order") || b.label.equals("Приказ")) && rightTaps)
+                    || ((b.label.equals("Select") || b.label.equals("Выбор")) && boxArmed);
             fill.setStyle(Paint.Style.FILL);
             fill.setColor(on ? 0xd0ffb03a : 0x900a1a2a);
             c.drawOval(b.rect, fill);

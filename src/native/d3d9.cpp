@@ -30,6 +30,7 @@
 namespace native {
 std::string TakeIoStats();  // kernel32.cpp: reads since the last perf line
 extern std::atomic<uint32_t> g_game_mode;  // the active game mode (UpdateGameMode, below)
+extern int g_trace_draws;                  // trace_hm_draws (TraceDraw, below)
 
 SDL_Window* g_sdl_window = nullptr;
 uint32_t HostWindow();
@@ -761,6 +762,7 @@ void WriteMode(uint32_t out, const D3DDISPLAYMODE& m) {
 void x_Direct3DCreate9(Ctx* c) {
     IDirect3D9* d3d = Direct3DCreate9(Arg(c, 0));
     Log("Direct3DCreate9(%u) -> %p", Arg(c, 0), static_cast<void*>(d3d));
+    g_trace_draws = SettingInt("trace_hm_draws", 0);
     // GPUs without BC formats (Mali, PowerVR) get DXT textures decoded on the CPU; decode_dxt=1/0 forces it.
     if (d3d) {
         bool bc = SUCCEEDED(d3d->CheckDeviceFormat(0, D3DDEVTYPE_HAL, D3DFMT_X8R8G8B8, 0, D3DRTYPE_TEXTURE,
@@ -1489,7 +1491,9 @@ M(IDirect3DIndexBuffer9, Unlock) { BufferUnlock<IDirect3DIndexBuffer9>(c); }
 
 // trace_hm_draws = N: logs the first N draws into 512x512 render targets (the planet height maps) with the vertex
 // shader constants c0-c3 and the positions of their vertices, to tell bad vertex data from bad GPU work.
-const int g_trace_draws = SettingInt("trace_hm_draws", 0);
+// Read in Direct3DCreate9: settings must not be read during static initialization (the settings files are loaded
+// once, on first use, and before main() the game folder is not known yet: every sporere.ini setting was ignored).
+int g_trace_draws = 0;
 void TraceDraw(Ctx* c, int kind) {
     static std::atomic<int> n{0};
     auto* dev = Host<IDirect3DDevice9>(Arg(c, 0));
