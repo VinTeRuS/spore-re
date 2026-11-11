@@ -24,6 +24,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "../host/d3d9_trace.h"
 #include "win.h"
 
 namespace native {
@@ -330,6 +331,8 @@ struct Shadow {
     uint32_t offset = 0;  // buffers: where in the mirror (and the buffer) the current lock starts
     void* host = nullptr;
     bool write_back = false;
+    bool buffer = false;  // a vertex/index buffer mirror (capacity = the buffer's size)
+    uint32_t flags = 0;
 };
 std::map<std::pair<void*, uint32_t>, Shadow> g_shadows;  // (object, subresource) -> shadow
 
@@ -365,6 +368,30 @@ void ShadowUnlock(void* object, uint32_t sub) {
     if (it == g_shadows.end() || !it->second.host) return;
     Shadow& s = it->second;
     if (s.write_back) memcpy(s.host, Ptr<void>(s.guest + s.offset), s.size);
+    if (s.write_back && s.buffer) {
+        // The game writes past the range it locks: it passes index counts where Lock takes bytes (half of every
+        // 16-bit index list was missing; planet height maps were built from broken triangles, the huge spiky
+        // mountains). On Windows the pointer goes into the buffer itself, so those writes count. Bytes after the
+        // locked range that the game changed (mirror differs from the buffer) are uploaded too, up to the first run of
+        // 256 unchanged bytes.
+        const uint8_t* m = Ptr<uint8_t>(s.guest + s.offset);
+        uint8_t* h = static_cast<uint8_t*>(s.host);
+        uint32_t rest = s.capacity - s.offset, end = 0, same = 0;
+        for (uint32_t i = s.size; i < rest && same < 256; ++i) {
+            if (m[i] != h[i]) {
+                end = i + 1;
+                same = 0;
+            } else {
+                ++same;
+            }
+        }
+        if (end > s.size) memcpy(h + s.size, m + s.size, end - s.size);
+        static const bool trace = SettingInt("trace_lock_overrun", 0) != 0;
+        static std::atomic<int> n{0};
+        if (trace && end > s.size && n.fetch_add(1) < 400)
+            Log("lock overrun: buffer %u bytes, flags %x, lock at %u size %u, written to +%u", s.capacity, s.flags,
+                s.offset, s.size, end);
+    }
     s.host = nullptr;
     s.offset = 0;
 }
@@ -390,6 +417,8 @@ uint32_t BufferShadowLock(void* object, void* host, uint32_t total, uint32_t off
     s.offset = offset;
     s.size = size;
     s.host = host;
+    s.buffer = true;
+    s.flags = flags;
     s.write_back = !(flags & D3DLOCK_READONLY);
     if (flags & D3DLOCK_READONLY) memcpy(Ptr<void>(s.guest + offset), host, size);  // GPU-written (ProcessVertices)
     return s.guest + offset;
@@ -1445,6 +1474,20 @@ void TraceDraw(Ctx* c, int kind) {
     rt->GetDesc(&rd);
     rt->Release();
     if (rd.Width != 512 || rd.Height != 512) return;
+    if (kind == 1) {
+        // the same text as the Wine-side proxy (src/host/d3d9_trace_proxy.cpp) writes for the original game
+        static std::atomic<int> snaps{0};
+        static FILE* f = fopen("d3d9trace.log", "w");
+        int s = snaps.fetch_add(1);
+        if (f && s < g_trace_draws) {
+            char call[128];
+            snprintf(call, sizeof call, "DrawIndexedPrimitive %d %d %u %u %u %u", int(Arg(c, 1)), int(Arg(c, 2)),
+                     Arg(c, 3), Arg(c, 4), Arg(c, 5), Arg(c, 6));
+            fputs((d3d9trace::Snapshot(dev, s, call) +
+                   d3d9trace::Geometry(dev, int(Arg(c, 2)), Arg(c, 3), Arg(c, 4), Arg(c, 5), Arg(c, 6))).c_str(), f);
+            fflush(f);
+        }
+    }
     int k = n.fetch_add(1);
     if (k >= g_trace_draws) return;
     IDirect3DVertexDeclaration9* decl = nullptr;
