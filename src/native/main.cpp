@@ -320,6 +320,10 @@ int main(int argc, char** argv) {
     }
     InitD3D9Bridge();
     setenv("DXVK_WSI_DRIVER", "SDL2", 0);  // DXVK native: the HWNDs we pass are SDL windows
+    // The frame is drawn at the render size and stretched to the screen when presented; sharpen = 0-10 makes that
+    // stretch a sharpening upscale (android/patches/dxvk-sharpen.patch): a lower render size, so a bigger game
+    // interface, still looks crisp. 0 = plain bilinear.
+    setenv("DXVK_PRESENT_SHARPEN", std::to_string(SettingInt("sharpen", 5)).c_str(), 1);
     SelectVulkanDriver();
     if (SettingInt("present_stats", 0)) setenv("DXVK_PRESENT_STATS", "1", 0);
     std::string dc = Setting("dxvk_config", "");

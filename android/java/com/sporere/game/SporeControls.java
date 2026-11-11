@@ -100,6 +100,11 @@ public class SporeControls extends View {
             tr(new String[] {"Off", "30", "40", "45", "50", "60", "90", "120"},
                new String[] {"Выкл", "30", "40", "45", "50", "60", "90", "120"}),
             new int[] {0, 30, 40, 45, 50, 60, 90, 120}, 60, false, true);
+    // The stretch from the render size to the screen: plain, or sharpened (DXVK present shader, dxvk-sharpen.patch).
+    private final Setting sSharpen = new Setting("Sharpness", "Резкость", "sharpen",
+            tr(new String[] {"Off", "Low", "Medium", "High", "Max"},
+               new String[] {"Выкл", "Слабая", "Средняя", "Сильная", "Макс"}),
+            new int[] {0, 3, 5, 7, 10}, 5, true, false);
     // Off: the CPU prepares the next frame while the GPU draws (smoother on most phones); On: the game's own wait.
     private final Setting sGpuSync = new Setting("Wait for GPU", "Ждать GPU", "gpu_sync", OFF_ON, new int[] {0, 1}, 0,
             true, false);
@@ -118,10 +123,10 @@ public class SporeControls extends View {
     private final Setting sVibrate = new Setting("Vibration", "Вибрация", "ui_vibrate", OFF_ON, new int[] {0, 1}, 1,
             false, false);
     // two columns in the panel: graphics, controls
-    private final Setting[] graphics = {sQuality, sResolution, sFps, sGpuSync, sShowFps};
+    private final Setting[] graphics = {sQuality, sResolution, sSharpen, sFps, sGpuSync, sShowFps};
     private final Setting[] controlsSettings = {sMode, sSpeed, sScale, sAlpha, sVibrate};
-    private final Setting[] settings = {sQuality, sResolution, sFps, sGpuSync, sShowFps, sMode, sSpeed, sScale, sAlpha,
-            sVibrate};
+    private final Setting[] settings = {sQuality, sResolution, sSharpen, sFps, sGpuSync, sShowFps, sMode, sSpeed, sScale,
+            sAlpha, sVibrate};
     private final RectF[] settingRects = new RectF[settings.length];
     private boolean engineChanged;
 

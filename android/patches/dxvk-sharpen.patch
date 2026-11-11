@@ -1,0 +1,114 @@
+--- a/src/dxvk/shaders/dxvk_present_frag_blit.frag
++++ b/src/dxvk/shaders/dxvk_present_frag_blit.frag
+@@ -4,11 +4,60 @@
+ 
+ #include "dxvk_present_common.glsl"
+ 
++// 0: plain bilinear scaling. 1-10: sharpening upscale (Spore Android port): each of the four source texels around
++// the output pixel is sharpened by its cross neighbours, as much as the local contrast allows (the AMD FidelityFX CAS
++// weighting), and the four results are blended bilinearly. One pass, twelve texel reads.
++layout(constant_id = 6) const uint c_sharpen = 0u;
++
+ layout(location = 0) in  vec2 i_coord;
+ layout(location = 0) out vec4 o_color;
+ 
++vec3 fetch_texel(ivec2 p) {
++  p = clamp(p, src_offset, src_offset + src_extent - ivec2(1));
++  return texelFetch(s_image, p, 0).rgb;
++}
++
++vec3 cas(vec3 b, vec3 d, vec3 e, vec3 f, vec3 h, float peak) {
++  vec3 mn = min(min(min(d, e), min(f, b)), h);
++  vec3 mx = max(max(max(d, e), max(f, b)), h);
++  vec3 amp = sqrt(clamp(min(mn, vec3(2.0) - mx) / max(mx, vec3(1.0f / 65536.0f)), 0.0, 1.0));
++  vec3 w = amp * peak;
++  return clamp(((b + d + f + h) * w + e) / (vec3(1.0) + 4.0 * w), 0.0, 1.0);
++}
++
+ void main() {
+   vec2 coord = vec2(src_offset) + vec2(src_extent) * i_coord;
+-  o_color = input_to_sc_rgb(textureLod(s_image, coord, 0.0f));
++
++  if (c_sharpen == 0u) {
++    o_color = input_to_sc_rgb(textureLod(s_image, coord, 0.0f));
++    o_color = sc_rgb_to_output(o_color);
++    return;
++  }
++
++  vec2 p = coord - 0.5;
++  ivec2 o = ivec2(floor(p));
++  vec2 t = p - vec2(o);
++
++  //        b0 b1
++  //     d0 e0 e1 f0
++  //     d1 e2 e3 f1
++  //        h0 h1
++  vec3 b0 = fetch_texel(o + ivec2(0, -1)), b1 = fetch_texel(o + ivec2(1, -1));
++  vec3 d0 = fetch_texel(o + ivec2(-1, 0)), d1 = fetch_texel(o + ivec2(-1, 1));
++  vec3 e0 = fetch_texel(o + ivec2(0, 0)),  e1 = fetch_texel(o + ivec2(1, 0));
++  vec3 e2 = fetch_texel(o + ivec2(0, 1)),  e3 = fetch_texel(o + ivec2(1, 1));
++  vec3 f0 = fetch_texel(o + ivec2(2, 0)),  f1 = fetch_texel(o + ivec2(2, 1));
++  vec3 h0 = fetch_texel(o + ivec2(0, 2)),  h1 = fetch_texel(o + ivec2(1, 2));
++
++  float sharp = float(c_sharpen) / 10.0;
++  float peak = -1.0 / mix(8.0, 5.0, sharp);
++
++  vec3 c0 = cas(b0, d0, e0, e1, e2, peak);
++  vec3 c1 = cas(b1, e0, e1, f0, e3, peak);
++  vec3 c2 = cas(e0, d1, e2, e3, h0, peak);
++  vec3 c3 = cas(e1, e2, e3, f1, h1, peak);
++  vec3 rgb = mix(mix(c0, c1, t.x), mix(c2, c3, t.x), t.y);
++
++  o_color = input_to_sc_rgb(vec4(rgb, 1.0));
+   o_color = sc_rgb_to_output(o_color);
+ }
+--- a/src/dxvk/dxvk_swapchain_blitter.h
++++ b/src/dxvk/dxvk_swapchain_blitter.h
+@@ -167,6 +167,7 @@
+       VkBool32 srcIsSrgb;
+       VkColorSpaceKHR dstSpace;
+       VkBool32 dstIsSrgb;
++      uint32_t sharpen;  // Spore Android port: sharpening upscale strength 0-10 (DXVK_PRESENT_SHARPEN)
+     };
+ 
+     struct PushConstants {
+--- a/src/dxvk/dxvk_swapchain_blitter.cpp
++++ b/src/dxvk/dxvk_swapchain_blitter.cpp
+@@ -1,4 +1,8 @@
+ #include "dxvk_swapchain_blitter.h"
++#include <algorithm>
++#include <cstdlib>
++
++#include "../util/util_env.h"
+ 
+ #include <dxvk_present_frag.h>
+ #include <dxvk_present_frag_blit.h>
+@@ -596,13 +600,14 @@
+     const DxvkSwapchainPipelineKey& key) {
+     auto vk = m_device->vkd();
+ 
+-    static const std::array<VkSpecializationMapEntry, 6> specMap = {{
++    static const std::array<VkSpecializationMapEntry, 7> specMap = {{
+       { 0, offsetof(SpecConstants, sampleCount),  sizeof(VkSampleCountFlagBits) },
+       { 1, offsetof(SpecConstants, gammaBound),   sizeof(VkBool32) },
+       { 2, offsetof(SpecConstants, srcSpace),     sizeof(VkColorSpaceKHR) },
+       { 3, offsetof(SpecConstants, srcIsSrgb),    sizeof(VkBool32) },
+       { 4, offsetof(SpecConstants, dstSpace),     sizeof(VkColorSpaceKHR) },
+       { 5, offsetof(SpecConstants, dstIsSrgb),    sizeof(VkBool32) },
++      { 6, offsetof(SpecConstants, sharpen),      sizeof(uint32_t) },
+     }};
+ 
+     SpecConstants specConstants = { };
+@@ -612,6 +617,12 @@
+     specConstants.srcIsSrgb = key.srcIsSrgb;
+     specConstants.dstSpace = key.dstSpace;
+     specConstants.dstIsSrgb = lookupFormatInfo(key.dstFormat)->flags.test(DxvkFormatFlag::ColorSpaceSrgb);
++    // Spore Android port: the scaling blit sharpens (0 = plain bilinear, 1-10 = strength)
++    static const uint32_t sharpen = [] {
++      std::string v = env::getEnvVar("DXVK_PRESENT_SHARPEN");
++      return v.empty() ? 0u : uint32_t(std::min(10, std::max(0, std::atoi(v.c_str()))));
++    }();
++    specConstants.sharpen = sharpen;
+ 
+     // Avoid redundant color space conversions if color spaces
+     // and images properties match and we don't do a resolve
