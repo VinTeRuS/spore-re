@@ -12,6 +12,8 @@ SDK=${ANDROID_HOME:-$HOME/Android/Sdk}
 BUILD_TOOLS=${BUILD_TOOLS:-$SDK/build-tools/36.0.0}
 PLATFORM_JAR=${PLATFORM_JAR:-$SDK/platforms/android-35/android.jar}
 DEPS_ROOT=${DEPS_ROOT:-$HOME/spore-re-data/android-deps}
+ANDROID_BUILD=${ANDROID_BUILD:-$ROOT/build/android}  # where libmain.so is (another folder for the PGO builds)
+APK_NAME=${APK_NAME:-spore.apk}
 TURNIP_ROOT=${TURNIP_ROOT:-$HOME/spore-re-data/android-turnip}
 SDL_SRC=${SDL_SRC:-$HOME/spore-re-data/android-deps-src/SDL2}
 KEYSTORE=${KEYSTORE:-$HOME/.android/debug.keystore}
@@ -35,15 +37,15 @@ javac --release 11 -nowarn -cp "$PLATFORM_JAR" -d "$OUT/classes" \
 cp "$OUT/dex/classes.dex" "$OUT/pkg/"
 for abi in "${ABIS[@]}"; do
     mkdir -p "$OUT/pkg/lib/$abi"
-    cp "$ROOT/build/android/$abi/libmain.so" "$DEPS_ROOT/$abi"/lib/lib{SDL2,dxvk_d3d9}.so "$OUT/pkg/lib/$abi/"
+    cp "$ANDROID_BUILD/$abi/libmain.so" "$DEPS_ROOT/$abi"/lib/lib{SDL2,dxvk_d3d9}.so "$OUT/pkg/lib/$abi/"
     # arm64: libmain.so targets ARMv8.2 + RCpc; the ARMv8.0 build for older cores (make ... ARM_ARCH=armv8-a
     # OUT=../../build/android/arm64-v8a-v80) ships next to it, SporeActivity picks one at run time.
     # The Turnip probe program (an executable, named like a library so the installer extracts it with the rest).
-    if [ -e "$ROOT/build/android/$abi/libturnipprobe.so" ]; then
-        cp "$ROOT/build/android/$abi/libturnipprobe.so" "$OUT/pkg/lib/$abi/"
+    if [ -e "$ANDROID_BUILD/$abi/libturnipprobe.so" ]; then
+        cp "$ANDROID_BUILD/$abi/libturnipprobe.so" "$OUT/pkg/lib/$abi/"
     fi
-    if [ -e "$ROOT/build/android/$abi-v80/libmain.so" ]; then
-        cp "$ROOT/build/android/$abi-v80/libmain.so" "$OUT/pkg/lib/$abi/libmain_v80.so"
+    if [ -e "$ANDROID_BUILD/$abi-v80/libmain.so" ]; then
+        cp "$ANDROID_BUILD/$abi-v80/libmain.so" "$OUT/pkg/lib/$abi/libmain_v80.so"
     fi
     # Adreno: Turnip and the adrenotools hooks (android/build-turnip.sh), when built
     if [ "$abi" = arm64-v8a ] && [ -e "$TURNIP_ROOT/lib/libvulkan_freedreno.so" ]; then
@@ -55,5 +57,5 @@ done
 
 "$BUILD_TOOLS/zipalign" -P 16 -f 4 "$OUT/base.apk" "$OUT/aligned.apk"
 "$BUILD_TOOLS/apksigner" sign --ks "$KEYSTORE" --ks-pass pass:android --key-pass pass:android \
-    --out "$OUT/spore.apk" "$OUT/aligned.apk"
-ls -la "$OUT/spore.apk"
+    --out "$OUT/$APK_NAME" "$OUT/aligned.apk"
+ls -la "$OUT/$APK_NAME"

@@ -29,6 +29,12 @@
 #include "guest.h"
 #include "win.h"
 
+#ifdef SPORERE_PGO_GEN
+extern "C" int __llvm_profile_write_file(void);
+extern "C" void __llvm_profile_set_filename(const char*);
+extern "C" void __llvm_profile_reset_counters(void);
+#endif
+
 namespace native {
 
 const char* g_game_dir = nullptr;
@@ -289,6 +295,22 @@ int main(int argc, char** argv) {
     }
     if (chdir(base) != 0) return 1;
     g_data_dir = base;
+#ifdef SPORERE_PGO_GEN
+    // Instrumented build (make PGO=gen): the counters go to <files>/spore-pgo-*.profraw every minute, merged into
+    // the file and reset, since an Android app is usually killed rather than exited.
+    {
+        __llvm_profile_set_filename((std::string(base) + "/spore-pgo-%m.profraw").c_str());
+        std::thread([] {
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::seconds(60));
+                int r = __llvm_profile_write_file();
+                __llvm_profile_reset_counters();
+                Log("pgo: profile written (%d)", r);
+            }
+        }).detach();
+        Log("pgo: instrumented build, profile every 60 s");
+    }
+#endif
     setenv("DXVK_STATE_CACHE_PATH", base, 0);
     setenv("DXVK_LOG_PATH", base, 0);
     if (!g_game_dir) {

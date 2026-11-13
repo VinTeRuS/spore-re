@@ -35,11 +35,23 @@ ARM_ARCH ?= armv8.2-a+rcpc
 TARGET_FLAGS := -fPIC $(if $(filter arm64-v8a,$(ABI)),-march=$(ARM_ARCH) -mtune=cortex-a76 \
                 $(if $(filter armv8-a,$(ARM_ARCH)),-moutline-atomics))
 RECOMP_OPT := -O2
+# Profile-guided optimization: PGO=gen builds an instrumented libmain.so that writes spore-pgo-*.profraw into the
+# app's files folder every minute (main.cpp); PGO=<merged .profdata> builds with that profile (android/pgo.sh).
+PGO ?=
+ifeq ($(PGO),gen)
+PGO_FLAGS := -fprofile-generate -DSPORERE_PGO_GEN
+PGO_LDFLAGS := -fprofile-generate
+else ifneq ($(PGO),)
+PGO_FLAGS := -fprofile-use=$(PGO) -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date
+PGO_LDFLAGS :=
+endif
 # arm64 is weakly ordered: guest memory accesses get x86-like ordering (runtime.h RECOMP_TSO); tso=0 to measure.
 TSO ?= 1
 RECOMP_EXTRA := $(if $(filter 1,$(TSO)),-DRECOMP_TSO)
 DEP_INCLUDES := -I$(DEPS)/include
 LDFLAGS := -shared -Wl,-Bsymbolic -static-libstdc++ -Wl,--no-undefined -L$(DEPS)/lib -ldxvk_d3d9 -lSDL2 -llog -landroid
+TARGET_FLAGS += $(PGO_FLAGS)
+LDFLAGS += $(PGO_LDFLAGS)
 # Adreno: Turnip and libadrenotools from android/build-turnip.sh (arm64 only; built without them otherwise).
 TURNIP ?= $(HOME)/spore-re-data/android-turnip
 ifneq ($(and $(filter arm64-v8a,$(ABI)),$(wildcard $(TURNIP)/lib/libadrenotools.a)),)
