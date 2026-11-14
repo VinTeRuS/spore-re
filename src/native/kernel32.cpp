@@ -957,10 +957,39 @@ K(CreateFileA) {
         mkdir(dir.c_str(), 0755);
     }
     int fd = open(host.c_str(), flags | O_CLOEXEC, 0644);
+    if (fd < 0 && (errno == EACCES || errno == EPERM) && write && existed) {
+        // Files put into the app's folder by hand (a file manager, a PC, adb) belong to another user: the app can
+        // read them but not write them, and the game opens its profile files (achievements, saves) for writing. A
+        // failed open there left the game with a database without a file, and it crashed on start. The file is
+        // copied into a new one the app owns; if that is not possible, it is opened read-only.
+        std::vector<char> data;
+        int in = open(host.c_str(), O_RDONLY | O_CLOEXEC);
+        if (in >= 0) {
+            char buf[65536];
+            for (ssize_t n; (n = ::read(in, buf, sizeof buf)) > 0;) data.insert(data.end(), buf, buf + n);
+            close(in);
+            std::string tmp = host + ".sporere-copy";
+            int out = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+            bool copied = out >= 0 && (data.empty() || ::write(out, data.data(), data.size()) == ssize_t(data.size()));
+            if (out >= 0) close(out);
+            if (copied && rename(tmp.c_str(), host.c_str()) == 0) {
+                fd = open(host.c_str(), flags | O_CLOEXEC, 0644);
+                Log("CreateFileA(%s): no write access, made a copy the app owns -> %s", name, fd < 0 ? strerror(errno) : "ok");
+            } else {
+                unlink(tmp.c_str());
+                fd = open(host.c_str(), (flags & ~(O_ACCMODE | O_TRUNC | O_CREAT)) | O_RDONLY | O_CLOEXEC);
+                Log("CreateFileA(%s): no write access, opened read-only -> %s", name, fd < 0 ? strerror(errno) : "ok");
+            }
+        }
+    }
+    const int open_errno = errno;
+    // a missing file is routine (the game probes for many); anything else is worth a line in the log
+    if (fd < 0 && open_errno != ENOENT && open_errno != ENOTDIR)
+        Log("CreateFileA(%s, access %x, disp %u) failed: %s", name, access, disposition, strerror(open_errno));
     static const bool trace = getenv("SPORERE_TRACE_FILES") != nullptr;
-    if (trace) Log("CreateFileA(%s, %x, disp %u) -> %s", name, access, disposition, fd < 0 ? strerror(errno) : "ok");
+    if (trace) Log("CreateFileA(%s, %x, disp %u) -> %s", name, access, disposition, fd < 0 ? strerror(open_errno) : "ok");
     if (fd < 0) {
-        SetLastError(ErrnoToWin(errno));
+        SetLastError(ErrnoToWin(open_errno));
         Return(c, kInvalidHandle, 7);
         return;
     }
