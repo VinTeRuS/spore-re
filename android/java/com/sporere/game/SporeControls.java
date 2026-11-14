@@ -134,6 +134,11 @@ public class SporeControls extends View {
     // Off: the CPU prepares the next frame while the GPU draws (smoother on most phones); On: the game's own wait.
     private final Setting sGpuSync = new Setting("Wait for GPU", "Ждать GPU", "gpu_sync", OFF_ON, new int[] {0, 1}, 0,
             true, false);
+    // Full: the whole screen; 16:9: bars at the sides of a long phone; Safe area: clear of the camera cutout and the
+    // rounded corners, which cut off the menus' corners otherwise.
+    private final Setting sScreen = new Setting("Screen", "Экран", "screen_fit",
+            tr(new String[] {"Full", "16:9", "Safe area"}, new String[] {"Весь", "16:9", "Без углов"}),
+            new int[] {0, 1, 2}, 0, true, false);
     private final Setting sShowFps = new Setting("Show FPS", "Показывать FPS", "ui_fps", OFF_ON, new int[] {0, 1}, 0,
             false, false);
     private final Setting sMode = new Setting("Touch mode", "Касания", "ui_touchpad",
@@ -156,9 +161,9 @@ public class SporeControls extends View {
     private final Setting sVibrate = new Setting("Vibration", "Вибрация", "ui_vibrate", OFF_ON, new int[] {0, 1}, 1,
             false, false);
     // two columns in the panel: graphics, controls
-    private final Setting[] graphics = {sQuality, sResolution, sSharpen, sFps, sGpuSync, sShowFps};
+    private final Setting[] graphics = {sQuality, sResolution, sSharpen, sFps, sGpuSync, sScreen, sShowFps};
     private final Setting[] controlsSettings = {sLanguage, sMode, sSpeed, sScale, sAlpha, sVibrate};
-    private final Setting[] settings = {sQuality, sResolution, sSharpen, sFps, sGpuSync, sShowFps, sLanguage, sMode,
+    private final Setting[] settings = {sQuality, sResolution, sSharpen, sFps, sGpuSync, sScreen, sShowFps, sLanguage, sMode,
             sSpeed, sScale, sAlpha, sVibrate};
     private final RectF[] settingRects = new RectF[settings.length];
     private boolean engineChanged;
@@ -292,11 +297,11 @@ public class SporeControls extends View {
                 return ru ? "Тап — выбрать, удержание — приказ, палец — двигать карту, два пальца — поворот, «Выбор» — рамка"
                           : "Tap to select, hold to order, drag to move the map, two fingers turn, Select for a box";
             case SPACE:
-                return ru ? "Космос: держи палец — лететь туда, тап — выбрать, два пальца — камера, +/− — высота"
-                          : "Space: hold a finger to fly there, tap to pick, two fingers turn, +/- altitude";
+                return ru ? "Космос: стик (W/S) — полёт, держи палец — лететь туда, тап — выбрать, два пальца — камера, +/− — высота"
+                          : "Space: stick (W/S) flies, hold a finger to fly there, tap to pick, two fingers turn, +/- altitude";
             case EDITOR:
-                return ru ? "Редактор: тяни детали пальцем, два пальца — камера, щипок — зум"
-                          : "Editor: drag parts, two fingers turn the camera, pinch to zoom";
+                return ru ? "Редактор: тяни детали пальцем, два пальца — камера, щипок — зум, коснись детали и \u25b2/\u25bc — размер"
+                          : "Editor: drag parts, two fingers turn the camera, pinch to zoom, tap a part and \u25b2/\u25bc to resize it";
             default:
                 return null;
         }
@@ -356,13 +361,16 @@ public class SporeControls extends View {
             case EDITOR:
                 actions.add(new Button("Undo", SporeControls::undo));
                 actions.add(new Button("Redo", SporeControls::redo));
+                // the mouse wheel over a part resizes it: tap the part (the cursor stays there), then these
+                actions.add(new Button("\u25b2", () -> wheel(1)));
+                actions.add(new Button("\u25bc", () -> wheel(-1)));
                 break;
             default:
                 break;
         }
         if (stick != null) {
             // tribe and civilization: the map moves with a finger, the stick only when asked for (WASD button)
-            boolean show = prefs.getBoolean("stick2_" + s.name(), s == Stage.CREATURE);
+            boolean show = prefs.getBoolean("stick3_" + s.name(), s == Stage.CREATURE || s == Stage.SPACE);
             if (show) stick.setVisibility(View.VISIBLE);
             else if (stick.getVisibility() == View.VISIBLE) stick.hide();
         }
@@ -444,13 +452,14 @@ public class SporeControls extends View {
         text.setTextAlign(Paint.Align.CENTER);
         handleFx = prefs.getFloat("ui_handle_x", 0.5f);
         handleFy = prefs.getFloat("ui_handle_y", 0.0f);
+        applyScreen(context);
         buttons.add(new Button("Esc", () -> key(KeyEvent.KEYCODE_ESCAPE)));
         buttons.add(new Button("WASD", () -> {
             if (stick == null) return;
             boolean show = stick.getVisibility() != View.VISIBLE;
             if (show) stick.setVisibility(View.VISIBLE);
             else stick.hide();
-            prefs.edit().putBoolean("stick2_" + stage.name(), show).apply();
+            prefs.edit().putBoolean("stick3_" + stage.name(), show).apply();
             invalidate();
         }));
         buttons.add(new Button("Stages", this::unlockStages));
@@ -465,8 +474,11 @@ public class SporeControls extends View {
     }
 
     // ---- input to SDL ----
+    // where the game's surface starts on the screen (the Screen setting): touches are in screen pixels
+    private static float surfaceX, surfaceY;
+
     private static void mouse(int buttons, int action, float x, float y) {
-        SDLActivity.onNativeMouse(buttons, action, x, y, false);
+        SDLActivity.onNativeMouse(buttons, action, x - surfaceX, y - surfaceY, false);
     }
 
     private static void key(int keycode) {
@@ -517,6 +529,54 @@ public class SporeControls extends View {
         SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_CTRL_LEFT);
         key(KeyEvent.KEYCODE_Y);
         SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_CTRL_LEFT);
+    }
+
+    /** Sizes the game's surface for the Screen setting, before it is first laid out (the game starts at that size). */
+    private void applyScreen(Context context) {
+        if (sScreen.value() == 0 || !(context instanceof SporeActivity)) return;
+        SporeActivity a = (SporeActivity) context;
+        android.view.View surface = a.surface();
+        if (surface == null) return;
+        android.util.DisplayMetrics dm = new android.util.DisplayMetrics();
+        a.getWindowManager().getDefaultDisplay().getRealMetrics(dm);
+        int w = Math.max(dm.widthPixels, dm.heightPixels), h = Math.min(dm.widthPixels, dm.heightPixels);
+        int left = 0, top = 0, right = 0, bottom = 0;
+        if (sScreen.value() == 1) {
+            int fw = Math.min(w, h * 16 / 9), fh = Math.min(h, w * 9 / 16);
+            left = right = (w - fw) / 2;
+            top = bottom = (h - fh) / 2;
+        } else if (android.os.Build.VERSION.SDK_INT >= 30) {
+            android.view.WindowInsets in = a.getWindowManager().getCurrentWindowMetrics().getWindowInsets();
+            android.view.DisplayCutout cut = in.getDisplayCutout();
+            if (cut != null) {
+                left = cut.getSafeInsetLeft();
+                right = cut.getSafeInsetRight();
+                top = cut.getSafeInsetTop();
+                bottom = cut.getSafeInsetBottom();
+            }
+            if (android.os.Build.VERSION.SDK_INT >= 31) {
+                // a corner of radius r is clear of the image when the sides move in by r (landscape)
+                left = Math.max(left, Math.max(radius(in, android.view.RoundedCorner.POSITION_TOP_LEFT),
+                        radius(in, android.view.RoundedCorner.POSITION_BOTTOM_LEFT)));
+                right = Math.max(right, Math.max(radius(in, android.view.RoundedCorner.POSITION_TOP_RIGHT),
+                        radius(in, android.view.RoundedCorner.POSITION_BOTTOM_RIGHT)));
+            }
+        }
+        if (sScreen.value() == 2 && left == 0 && right == 0) left = right = Math.round(32 * density);  // a guess
+        android.widget.RelativeLayout.LayoutParams lp =
+                new android.widget.RelativeLayout.LayoutParams(w - left - right, h - top - bottom);
+        lp.leftMargin = left;
+        lp.topMargin = top;
+        surface.setLayoutParams(lp);
+        surfaceX = left;
+        surfaceY = top;
+        android.util.Log.i("sporere", "screen " + sScreen.value() + ": " + (w - left - right) + "x"
+                + (h - top - bottom) + " at " + left + "," + top);
+    }
+
+    private static int radius(android.view.WindowInsets in, int pos) {
+        android.view.RoundedCorner c = in.getRoundedCorner(pos);
+        return c == null ? 0 : c.getRadius();
     }
 
     private static void wheel(float steps) {

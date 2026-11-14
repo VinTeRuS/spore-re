@@ -131,6 +131,11 @@ public class SporeActivity extends SDLActivity {
         addContentView(mark, lp);
     }
 
+    /** SDL's game surface (the Screen setting sizes it). */
+    android.view.View surface() {
+        return mSurface;
+    }
+
     @Override
     public void onBackPressed() {
         SporeControls.onBack(this);  // the game's own menu / back, instead of leaving the app
