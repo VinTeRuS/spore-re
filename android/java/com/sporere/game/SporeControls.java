@@ -49,7 +49,7 @@ public class SporeControls extends View {
      * stages, where the right button gives orders and does not turn; the right one elsewhere.
      */
     private int turnButton() {
-        return stage == Stage.TRIBE || stage == Stage.CIV ? MIDDLE : RIGHT;
+        return stage == Stage.TRIBE || stage == Stage.CIV || stage == Stage.SPACE ? MIDDLE : RIGHT;
     }
     private static final int DOWN = MotionEvent.ACTION_DOWN, UP = MotionEvent.ACTION_UP, MOVE = MotionEvent.ACTION_MOVE;
     private static final long LONG_PRESS_MS = 500, LEFT_DELAY_MS = 60, DOUBLE_TAP_MS = 280;
@@ -215,7 +215,15 @@ public class SporeControls extends View {
     private boolean dragTurnsCamera() {
         if (camLock) return true;
         if (boxArmed) return false;
-        return stage == Stage.CREATURE || stage == Stage.SPACE;
+        return stage == Stage.CREATURE;
+    }
+
+    /**
+     * In the space stage the ship flies toward the cursor while the right button is held (the game's own hint:
+     * "use the right mouse button to fly"): a one-finger drag holds it with the cursor under the finger.
+     */
+    private boolean dragFlies() {
+        return !camLock && !boxArmed && stage == Stage.SPACE;
     }
 
     /**
@@ -260,8 +268,8 @@ public class SporeControls extends View {
                 return ru ? "Тап — выбрать, удержание — приказ, палец — двигать карту, два пальца — поворот, «Выбор» — рамка"
                           : "Tap to select, hold to order, drag to move the map, two fingers turn, Select for a box";
             case SPACE:
-                return ru ? "Космос: тап — лететь / выбрать, палец — камера, 1–4 — инструменты, «Приказ» — правый клик"
-                          : "Space: tap to fly / pick, drag to turn the camera, 1-4 tools, Order = right click";
+                return ru ? "Космос: держи палец — лететь туда, тап — выбрать, два пальца — камера, +/− — высота"
+                          : "Space: hold a finger to fly there, tap to pick, two fingers turn, +/- altitude";
             case EDITOR:
                 return ru ? "Редактор: тяни детали пальцем, два пальца — камера, щипок — зум"
                           : "Editor: drag parts, two fingers turn the camera, pinch to zoom";
@@ -316,9 +324,10 @@ public class SporeControls extends View {
                 actions.add(new Button(ru() ? "Приказ" : "Order", this::toggleRightTaps));
                 actions.add(new Button(ru() ? "Выбор" : "Select", this::armBox));
                 break;
-            case SPACE:  // tools on the number keys
+            case SPACE:  // tools on the number keys, altitude on +/- (main keyboard and keypad: whichever the game reads)
                 for (int k = 1; k <= 4; ++k) actions.add(keyButton(String.valueOf(k), KeyEvent.KEYCODE_0 + k));
-                actions.add(new Button(ru() ? "Приказ" : "Order", this::toggleRightTaps));
+                actions.add(keysButton("+", KeyEvent.KEYCODE_EQUALS, KeyEvent.KEYCODE_NUMPAD_ADD));
+                actions.add(keysButton("\u2212", KeyEvent.KEYCODE_MINUS, KeyEvent.KEYCODE_NUMPAD_SUBTRACT));
                 break;
             case EDITOR:
                 actions.add(new Button("Undo", SporeControls::undo));
@@ -334,6 +343,15 @@ public class SporeControls extends View {
             else if (stick.getVisibility() == View.VISIBLE) stick.hide();
         }
         invalidate();
+    }
+
+    private Button keysButton(String label, int... keycodes) {
+        return new Button(label, () -> {
+            for (int k : keycodes) SDLActivity.onNativeKeyDown(k);
+            handler.postDelayed(() -> {
+                for (int k : keycodes) SDLActivity.onNativeKeyUp(k);
+            }, 250);
+        });
     }
 
     private Button keyButton(String label, int keycode) {
@@ -359,7 +377,7 @@ public class SporeControls extends View {
     }
 
     // ---- gesture state ----
-    private enum Mode { NONE, PENDING, LEFT_DRAG, CAM_DRAG, PAN, CURSOR, TWO_FINGER, BUTTON, PANEL, HANDLE, EDIT }
+    private enum Mode { NONE, PENDING, LEFT_DRAG, CAM_DRAG, PAN, FLY, CURSOR, TWO_FINGER, BUTTON, PANEL, HANDLE, EDIT }
     private Mode mode = Mode.NONE;
     private float downX, downY, lastX, lastY, lastMidX, lastMidY, lastSpan, wheelAccum;
     private float camX, camY;            // virtual pointer while rotating the camera (moves at the camera speed)
@@ -524,6 +542,12 @@ public class SporeControls extends View {
             mode = Mode.PAN;
             return;
         }
+        if (dragFlies()) {
+            mode = Mode.FLY;
+            mouse(0, MOVE, lastX, lastY);
+            mouse(RIGHT, DOWN, lastX, lastY);
+            return;
+        }
         if (dragTurnsCamera()) {
             mode = Mode.CAM_DRAG;
             camX = px(downX);
@@ -594,9 +618,13 @@ public class SporeControls extends View {
             if (!touchpad()) mouse(0, MOVE, x, y);
             // press-and-hold drags with the left button after a moment (editors, cell); where a drag turns the
             // camera or moves the map it starts only when the finger moves, so a slow tap is still a tap
-            if (mode == Mode.PENDING && !touchpad() && !dragTurnsCamera() && !dragPansMap())
+            if (mode == Mode.PENDING && !touchpad() && !dragTurnsCamera() && !dragPansMap() && !dragFlies())
                 handler.postDelayed(leftDown, LEFT_DELAY_MS * 3);
-            handler.postDelayed(longPress, LONG_PRESS_MS);
+            if (mode == Mode.PENDING && !touchpad() && dragFlies()) {
+                handler.postDelayed(leftDown, 250);  // space: holding a finger still flies there too
+            } else {
+                handler.postDelayed(longPress, LONG_PRESS_MS);
+            }
             return true;
         }
         if (mode == Mode.PANEL) {
@@ -640,7 +668,7 @@ public class SporeControls extends View {
                 if (e.getPointerCount() == 2) {
                     handler.removeCallbacks(leftDown);
                     handler.removeCallbacks(longPress);
-                    if (mode == Mode.LEFT_DRAG || mode == Mode.CAM_DRAG) mouse(0, UP, lastMidX, lastMidY);
+                    if (mode == Mode.LEFT_DRAG || mode == Mode.CAM_DRAG || mode == Mode.FLY) mouse(0, UP, lastMidX, lastMidY);
                     panKeys(0, 0);
                     mode = Mode.TWO_FINGER;
                     lastMidX = (e.getX(0) + e.getX(1)) / 2;
@@ -678,6 +706,8 @@ public class SporeControls extends View {
                     mouse(0, UP, camX, camY);
                 } else if (mode == Mode.PAN) {
                     panKeys(0, 0);
+                } else if (mode == Mode.FLY) {
+                    mouse(0, UP, x, y);
                 }
                 if (!touchpad()) parkIfAtEdge(x, y);
                 mode = Mode.NONE;
@@ -753,6 +783,9 @@ public class SporeControls extends View {
                 break;
             case PAN:
                 panKeys(x - downX, y - downY);
+                break;
+            case FLY:
+                mouse(RIGHT, MOVE, x, y);
                 break;
             default:
                 break;

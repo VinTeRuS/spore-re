@@ -14,10 +14,10 @@
 namespace native {
 
 // Creates a throwaway instance to see which GPU the driver drives; returns the device name ("" if none) and puts a
-// line for the log in `report`.
+// line for the log in `report`. `driver_id` gets VkPhysicalDeviceDriverProperties::driverID (0 if unknown).
 inline std::string ProbeDevice(PFN_vkGetInstanceProcAddr gipa, const char* driver, std::string& report,
-                        uint32_t* api_version = nullptr) {
-    char line[256];
+                        uint32_t* api_version = nullptr, uint32_t* driver_id = nullptr) {
+    char line[384];
     auto create = reinterpret_cast<PFN_vkCreateInstance>(gipa(nullptr, "vkCreateInstance"));
     if (!create) {
         snprintf(line, sizeof(line), "vulkan: %s has no vkCreateInstance", driver);
@@ -39,6 +39,8 @@ inline std::string ProbeDevice(PFN_vkGetInstanceProcAddr gipa, const char* drive
     auto enumerate = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(gipa(instance, "vkEnumeratePhysicalDevices"));
     auto props = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(gipa(instance, "vkGetPhysicalDeviceProperties"));
     auto destroy = reinterpret_cast<PFN_vkDestroyInstance>(gipa(instance, "vkDestroyInstance"));
+    auto props2 =
+        reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(gipa(instance, "vkGetPhysicalDeviceProperties2"));
     std::string name;
     uint32_t count = 1;
     VkPhysicalDevice device = VK_NULL_HANDLE;
@@ -48,9 +50,21 @@ inline std::string ProbeDevice(PFN_vkGetInstanceProcAddr gipa, const char* drive
         props(device, &p);
         name = p.deviceName;
         if (api_version) *api_version = p.apiVersion;
-        snprintf(line, sizeof(line), "vulkan: %s sees %s (Vulkan %u.%u.%u, driver %08x, vendor %04x device %08x)",
-                 driver, p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion), VK_API_VERSION_MINOR(p.apiVersion),
-                 VK_API_VERSION_PATCH(p.apiVersion), p.driverVersion, p.vendorID, p.deviceID);
+        // which driver it is (Turnip names an Adreno 840 just "Adreno (TM) 840", without "Turnip")
+        VkPhysicalDeviceDriverProperties dp{};
+        dp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+        if (props2 && p.apiVersion >= VK_API_VERSION_1_2) {
+            VkPhysicalDeviceProperties2 p2{};
+            p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            p2.pNext = &dp;
+            props2(device, &p2);
+        }
+        if (driver_id) *driver_id = uint32_t(dp.driverID);
+        snprintf(line, sizeof(line),
+                 "vulkan: %s sees %s (Vulkan %u.%u.%u, driver %08x \"%s\" id %u, vendor %04x device %08x)", driver,
+                 p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion), VK_API_VERSION_MINOR(p.apiVersion),
+                 VK_API_VERSION_PATCH(p.apiVersion), p.driverVersion, dp.driverName, unsigned(dp.driverID),
+                 p.vendorID, p.deviceID);
     } else {
         snprintf(line, sizeof(line), "vulkan: %s vkEnumeratePhysicalDevices -> %d, %u device(s)", driver, r, count);
     }
@@ -79,15 +93,17 @@ inline PFN_vkGetInstanceProcAddr LoadTurnip(const Driver& d, std::string& device
         report = "vulkan: the adrenotools loader has no vkGetInstanceProcAddr";
         return nullptr;
     }
-    uint32_t api = 0;
-    device = ProbeDevice(gipa, d.file.c_str(), report, &api);
+    uint32_t api = 0, driver_id = 0;
+    device = ProbeDevice(gipa, d.file.c_str(), report, &api, &driver_id);
     // DXVK needs Vulkan 1.3; Turnip 26.2 offers only 1.0 on an Adreno 610, where 26.3 runs the game.
     if (!device.empty() && api < VK_API_VERSION_1_3) {
         report += " (needs Vulkan 1.3)";
         device.clear();
         return nullptr;
     }
-    if (device.empty() || (!d.custom && device.find("Turnip") == std::string::npos)) {
+    // Turnip by its driver id; by name for drivers that report none
+    const bool turnip = driver_id == VK_DRIVER_ID_MESA_TURNIP || device.find("Turnip") != std::string::npos;
+    if (device.empty() || (!d.custom && !turnip)) {
         report += device.empty() ? "" : " (not Turnip: the driver did not load)";
         device.clear();
         return nullptr;
