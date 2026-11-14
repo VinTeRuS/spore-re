@@ -1,10 +1,14 @@
 // ADVAPI32 for the native host: an in-memory registry seeded with the game's settings (language as written by
 // the installer; Language Packs/*.reg), and CryptoAPI stubs.
+#include <dirent.h>
+
+#include <algorithm>
 #include <cctype>
 #include <cstring>
 #include <map>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "win.h"
 
@@ -39,15 +43,51 @@ std::string RootName(uint32_t h) {
     return it == g_open.end() ? std::string() : it->second;
 }
 
+// The game's language folder (Data/Locale/<xx-yy>): `locale` from the settings unless empty or "auto"; otherwise the
+// system language (SPORERE_SYSTEM_LOCALE from the Android app, e.g. "pt-BR", or LANG on a desktop, e.g. "ru_RU.UTF-8")
+// when the game has it, exactly or by language (pt -> pt-br, en -> en-us, zh -> zh-cn); else English.
+std::string PickLocale() {
+    std::string want = Setting("locale", "");
+    for (char& ch : want) ch = char(tolower((unsigned char)ch));
+    if (!want.empty() && want != "auto") return want;
+    std::vector<std::string> have;
+    std::string dir = std::string(g_game_dir ? g_game_dir : ".") + "/Data/Locale";
+    if (DIR* d = opendir(dir.c_str())) {
+        while (dirent* e = readdir(d))
+            if (e->d_name[0] != '.' && strlen(e->d_name) == 5 && e->d_name[2] == '-') have.push_back(e->d_name);
+        closedir(d);
+    }
+    auto has = [&](const std::string& l) { return std::find(have.begin(), have.end(), l) != have.end(); };
+    const char* sys = getenv("SPORERE_SYSTEM_LOCALE");
+    if (!sys || !*sys) sys = getenv("LANG");
+    std::string s = sys ? sys : "";
+    for (char& ch : s) ch = ch == '_' ? '-' : char(tolower((unsigned char)ch));
+    std::string full = s.substr(0, 5), lang = s.substr(0, 2);
+    std::string pick;
+    if (full.size() == 5 && has(full)) {
+        pick = full;
+    } else if (lang.size() == 2) {
+        static const char* const kPreferred[] = {"en-us", "pt-br", "zh-cn", "es-es", "fr-fr", "de-de"};
+        for (const char* p : kPreferred)
+            if (lang == std::string(p, 2) && has(p)) pick = p;
+        if (pick.empty())
+            for (const std::string& l : have)
+                if (l.compare(0, 2, lang) == 0) pick = l;
+    }
+    if (pick.empty()) pick = has("en-us") || have.empty() ? "en-us" : have.front();
+    Log("language: %s (system %s)", pick.c_str(), s.empty() ? "unknown" : s.c_str());
+    return pick;
+}
+
 void Seed() {
     static bool done = false;
     if (done) return;
     done = true;
     auto sz = [](const char* s) { return Value{1, std::string(s) + '\0'}; };
     auto dw = [](uint32_t v) { return Value{4, std::string(reinterpret_cast<const char*>(&v), 4)}; };
-    // What the GOG installer writes (32-bit view), with the game root at kGuestGameDir. The language follows the
-    // install; sporere.ini `locale = en-us` switches it.
-    static const std::string locale = Setting("locale", "ru-ru");
+    // What the GOG installer writes (32-bit view), with the game root at kGuestGameDir. The language: the setting
+    // (sporere.ini `locale = en-us`, the settings panel), else the phone's language when the game has it.
+    static const std::string locale = PickLocale();
     auto& k = g_keys["hklm\\software\\electronic arts\\spore"];
     k["appdir"] = sz("Spore");
     k["datadir"] = sz("C:\\Game\\Data");

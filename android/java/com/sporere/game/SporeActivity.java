@@ -64,17 +64,47 @@ public class SporeActivity extends SDLActivity {
         super.onDestroy();
     }
 
+    /**
+     * Asks for the display mode with the highest refresh rate at the current resolution. Some phones (HyperOS,
+     * ColorOS) run apps that don't ask at 30 Hz to save power, and the game's frames are tied to the refresh rate
+     * (vsync): it was stuck at 30 fps there whatever the FPS limit said.
+     */
+    private void preferFastDisplayMode() {
+        try {
+            android.view.Display display = getWindowManager().getDefaultDisplay();
+            android.view.Display.Mode current = display.getMode(), best = current;
+            for (android.view.Display.Mode m : display.getSupportedModes()) {
+                if (m.getPhysicalWidth() == current.getPhysicalWidth()
+                        && m.getPhysicalHeight() == current.getPhysicalHeight()
+                        && m.getRefreshRate() > best.getRefreshRate()) {
+                    best = m;
+                }
+            }
+            WindowManager.LayoutParams lp = getWindow().getAttributes();
+            lp.preferredDisplayModeId = best.getModeId();
+            lp.preferredRefreshRate = best.getRefreshRate();
+            getWindow().setAttributes(lp);
+            android.util.Log.i("sporere", "display mode " + best.getRefreshRate() + " Hz (was "
+                    + current.getRefreshRate() + " Hz)");
+        } catch (RuntimeException e) {
+            android.util.Log.w("sporere", "display mode: " + e);
+        }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         // The native side loads the bundled Vulkan driver (Turnip, on Adreno) from the extracted libraries.
         try {
             Os.setenv("SPORERE_NATIVE_LIB_DIR", getApplicationInfo().nativeLibraryDir, true);
             Os.setenv("SPORERE_CREDIT", SetupActivity.CREDIT, true);
+            // the game's language follows the phone's unless one is chosen in the settings (advapi32.cpp)
+            Os.setenv("SPORERE_SYSTEM_LOCALE", java.util.Locale.getDefault().toLanguageTag(), true);
         } catch (ErrnoException ignored) {
             // the system Vulkan driver is used
         }
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);  // no dimming while playing
+        preferFastDisplayMode();
         // Spore is played with the mouse: SporeControls turns touches into mouse input (tap, drag, long press,
         // two-finger camera, pinch zoom) and adds Esc, keyboard, FPS and settings buttons.
         SporeControls controls = new SporeControls(this);

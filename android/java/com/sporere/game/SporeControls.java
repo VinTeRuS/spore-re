@@ -68,6 +68,7 @@ public class SporeControls extends View {
         final int[] values;
         final boolean engine;  // written to sporere.ini, applies on the next start
         final boolean ini;     // kept in sporere.ini but applied at once (FPS limit)
+        String[] codes;        // written to sporere.ini as these strings instead of the numbers (language)
         int index;
 
         Setting(String en, String ruLabel, String key, String[] names, int[] values, int def, boolean engine,
@@ -94,6 +95,22 @@ public class SporeControls extends View {
 
     private static String[] tr(String[] en, String[] ruNames) {
         return ru() ? ruNames : en;
+    }
+
+    // The game's language (Data/Locale folders of the GOG release), each in its own language; Auto follows the phone.
+    private static final String[] LANG_CODES = {"auto", "en-us", "en-gb", "ru-ru", "de-de", "fr-fr", "es-es", "it-it",
+            "pt-br", "pt-pt", "pl-pl", "nl-nl", "cs-cz", "hu-hu", "sv-se", "da-dk", "no-no", "fi-fi", "el-gr", "ja-jp",
+            "ko-kr", "zh-cn", "zh-tw", "th-th"};
+    private static final String[] LANG_NAMES = {"Auto", "English (US)", "English (UK)", "\u0420\u0443\u0441\u0441\u043a\u0438\u0439",
+            "Deutsch", "Fran\u00e7ais", "Espa\u00f1ol", "Italiano", "Portugu\u00eas (BR)", "Portugu\u00eas (PT)", "Polski",
+            "Nederlands", "\u010ce\u0161tina", "Magyar", "Svenska", "Dansk", "Norsk", "Suomi",
+            "\u0395\u03bb\u03bb\u03b7\u03bd\u03b9\u03ba\u03ac", "\u65e5\u672c\u8a9e", "\ud55c\uad6d\uc5b4",
+            "\u7b80\u4f53\u4e2d\u6587", "\u7e41\u9ad4\u4e2d\u6587", "\u0e44\u0e17\u0e22"};
+
+    private static int[] indices(int n) {
+        int[] v = new int[n];
+        for (int i = 0; i < n; ++i) v[i] = i;
+        return v;
     }
 
     private static final String[] OFF_ON = tr(new String[] {"Off", "On"}, new String[] {"Выкл", "Вкл"});
@@ -129,13 +146,20 @@ public class SporeControls extends View {
             new String[] {"80%", "100%", "120%", "140%"}, new int[] {80, 100, 120, 140}, 100, false, false);
     private final Setting sAlpha = new Setting("Button opacity", "Видимость кнопок", "ui_alpha",
             new String[] {"40%", "60%", "80%", "100%"}, new int[] {40, 60, 80, 100}, 80, false, false);
+    private final Setting sLanguage = new Setting("Language", "\u042f\u0437\u044b\u043a", "locale", LANG_NAMES,
+            indices(LANG_CODES.length), 0, true, false);
+
+    {
+        sLanguage.codes = LANG_CODES;
+    }
+
     private final Setting sVibrate = new Setting("Vibration", "Вибрация", "ui_vibrate", OFF_ON, new int[] {0, 1}, 1,
             false, false);
     // two columns in the panel: graphics, controls
     private final Setting[] graphics = {sQuality, sResolution, sSharpen, sFps, sGpuSync, sShowFps};
-    private final Setting[] controlsSettings = {sMode, sSpeed, sScale, sAlpha, sVibrate};
-    private final Setting[] settings = {sQuality, sResolution, sSharpen, sFps, sGpuSync, sShowFps, sMode, sSpeed, sScale,
-            sAlpha, sVibrate};
+    private final Setting[] controlsSettings = {sLanguage, sMode, sSpeed, sScale, sAlpha, sVibrate};
+    private final Setting[] settings = {sQuality, sResolution, sSharpen, sFps, sGpuSync, sShowFps, sLanguage, sMode,
+            sSpeed, sScale, sAlpha, sVibrate};
     private final RectF[] settingRects = new RectF[settings.length];
     private boolean engineChanged;
 
@@ -407,6 +431,11 @@ public class SporeControls extends View {
         density = getResources().getDisplayMetrics().density;
         prefs = context.getSharedPreferences("controls", Context.MODE_PRIVATE);
         for (Setting s : settings) {
+            if (s.codes != null) {
+                String code = readIniString(s.key, s.codes[0]).toLowerCase(java.util.Locale.ROOT);
+                for (int i = 0; i < s.codes.length; ++i) if (s.codes[i].equals(code)) s.index = i;
+                continue;
+            }
             int v = s.engine || s.ini ? readIni(s.key, s.value()) : prefs.getInt(s.key, s.value());
             for (int i = 0; i < s.values.length; ++i) if (s.values[i] == v) s.index = i;
         }
@@ -852,7 +881,13 @@ public class SporeControls extends View {
 
     private void applySetting(Setting s) {
         if (s.engine) {
-            writeIni(s.key, s.value());
+            if (s.codes != null) {
+                writeIniString(s.key, s.codes[s.index]);
+                // the game folder's file wins: update its line too if it has one
+                File game = gameIniFile();
+                if (game.exists() && readIniFrom(game, s.key) != null) writeIniTo(game, s.key, s.codes[s.index]);
+            }
+            else writeIni(s.key, s.value());
             // Quality also picks the texture detail: Pretty loads full textures, the others skip the top mip
             if (s == sQuality) writeIni("texture_skip_mips", s.value() == 2 ? 0 : 1);
             engineChanged = true;
@@ -996,6 +1031,25 @@ public class SporeControls extends View {
         return dir == null ? null : new File(dir, "sporere.ini");
     }
 
+    private String readIniString(String key, String def) {
+        String v = readIniFrom(gameIniFile(), key);  // the game folder's file wins, as in the game
+        if (v == null) v = readIniFrom(iniFile(), key);
+        return v != null ? v : def;
+    }
+
+    private static String readIniFrom(File ini, String key) {
+        if (ini == null) return null;
+        try (BufferedReader r = new BufferedReader(new FileReader(ini))) {
+            for (String l; (l = r.readLine()) != null;) {
+                String[] kv = l.split("=", 2);
+                if (kv.length == 2 && kv[0].trim().equalsIgnoreCase(key)) return kv[1].trim();
+            }
+        } catch (IOException ignored) {
+            // no setting yet
+        }
+        return null;
+    }
+
     private int readIni(String key, int def) {
         File ini = iniFile();
         if (ini == null) return def;
@@ -1011,7 +1065,26 @@ public class SporeControls extends View {
     }
 
     private void writeIni(String key, int value) {
-        File ini = iniFile();
+        writeIniString(key, String.valueOf(value));
+    }
+
+    private void writeIniString(String key, String value) {
+        writeIniTo(iniFile(), key, value);
+    }
+
+    /** The game folder's sporere.ini (its keys win over the app's: a PC may have put a language there). */
+    private File gameIniFile() {
+        String game = null;
+        try {
+            game = android.system.Os.getenv("SPORERE_GAME");
+        } catch (RuntimeException ignored) {
+            // not set: the game is in the app's folder
+        }
+        File dir = game != null ? new File(game) : new File(getContext().getExternalFilesDir(null), "game");
+        return new File(dir, "sporere.ini");
+    }
+
+    private void writeIniTo(File ini, String key, String value) {
         if (ini == null) return;
         List<String> lines = new ArrayList<>();
         try (BufferedReader r = new BufferedReader(new FileReader(ini))) {
