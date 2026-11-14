@@ -38,10 +38,21 @@ public class SetupActivity extends Activity {
     static final String CREDIT_URL = "patreon.com/cw/VinTeRuS";
     static final String SUPPORT_URL = "https://www.patreon.com/cw/VinTeRuS/membership";
 
+    static final String GITHUB_URL = "https://github.com/VinTeRuS/spore-re";
+
     /** Opens the author's Patreon page in the browser. */
     static void openSupport(android.content.Context context) {
+        openUrl(context, SUPPORT_URL);
+    }
+
+    /** Opens the port's source code (GitHub) in the browser. */
+    static void openGitHub(android.content.Context context) {
+        openUrl(context, GITHUB_URL);
+    }
+
+    private static void openUrl(android.content.Context context, String url) {
         try {
-            context.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(SUPPORT_URL))
+            context.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         } catch (Exception ignored) {
             // no browser
@@ -244,6 +255,7 @@ public class SetupActivity extends Activity {
         if (!hasSharedAccess()) row.addView(button("Allow file access", this::requestAccess));
         row.addView(button("Exit", this::finish));
         row.addView(button("Support on Patreon", () -> openSupport(this)));
+        row.addView(button("GitHub", () -> openGitHub(this)));
         col.addView(row);
         TextView credit = text(CREDIT + " \u00b7 " + CREDIT_URL, 12, false);
         credit.setTextColor(Color.rgb(150, 150, 150));

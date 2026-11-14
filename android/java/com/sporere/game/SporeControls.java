@@ -362,7 +362,7 @@ public class SporeControls extends View {
 
     // ---- overlay ----
     private boolean panelOpen;
-    private final RectF panel = new RectF(), panelClose = new RectF(), panelSupport = new RectF(),
+    private final RectF panel = new RectF(), panelClose = new RectF(), panelSupport = new RectF(), panelGitHub = new RectF(),
             panelCloseBig = new RectF();
     private final Runnable fpsTick = new Runnable() {
         @Override
@@ -784,6 +784,10 @@ public class SporeControls extends View {
             SetupActivity.openSupport(getContext());
             return;
         }
+        if (panelGitHub.contains(x, y)) {
+            SetupActivity.openGitHub(getContext());
+            return;
+        }
         if (panelLayout.contains(x, y)) {
             closePanel();
             startLayoutEditor();
@@ -1156,23 +1160,26 @@ public class SporeControls extends View {
                 y += row + rowGap;
             }
         }
-        // footer: layout editor, support, close
-        float by = top + h - footer + 12 * density, bh = 38 * density, bw = (w - pad * 4) / 3;
+        // footer: layout editor, support, source code, close
+        float by = top + h - footer + 12 * density, bh = 38 * density, bw = (w - pad * 5) / 4;
         panelLayout.set(left + pad, by, left + pad + bw, by + bh);
         panelSupport.set(panelLayout.right + pad, by, panelLayout.right + pad + bw, by + bh);
-        RectF closeBig = new RectF(panelSupport.right + pad, by, panelSupport.right + pad + bw, by + bh);
+        panelGitHub.set(panelSupport.right + pad, by, panelSupport.right + pad + bw, by + bh);
+        RectF closeBig = new RectF(panelGitHub.right + pad, by, panelGitHub.right + pad + bw, by + bh);
         fill.setColor(0xff1d5a6a);
         c.drawRoundRect(panelLayout, 10 * density, 10 * density, fill);
         fill.setColor(0xff7a3a6e);
         c.drawRoundRect(panelSupport, 10 * density, 10 * density, fill);
+        fill.setColor(0xff2d333b);
+        c.drawRoundRect(panelGitHub, 10 * density, 10 * density, fill);
         fill.setColor(0xff22384a);
         c.drawRoundRect(closeBig, 10 * density, 10 * density, fill);
         text.setTextAlign(Paint.Align.CENTER);
         text.setColor(Color.WHITE);
         text.setTextSize(14 * density);
-        c.drawText(ru() ? "Раскладка кнопок" : "Edit layout", panelLayout.centerX(), panelLayout.centerY() + 5 * density,
-                text);
+        c.drawText(ru() ? "Раскладка" : "Layout", panelLayout.centerX(), panelLayout.centerY() + 5 * density, text);
         c.drawText("Patreon", panelSupport.centerX(), panelSupport.centerY() + 5 * density, text);
+        c.drawText("GitHub", panelGitHub.centerX(), panelGitHub.centerY() + 5 * density, text);
         c.drawText(ru() ? "Закрыть" : "Close", closeBig.centerX(), closeBig.centerY() + 5 * density, text);
         panelCloseBig.set(closeBig);
     }
