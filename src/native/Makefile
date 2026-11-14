@@ -50,7 +50,7 @@ TSO ?= 1
 RECOMP_EXTRA := $(if $(filter 1,$(TSO)),-DRECOMP_TSO)
 DEP_INCLUDES := -I$(DEPS)/include
 LDFLAGS := -shared -Wl,-Bsymbolic -static-libstdc++ -Wl,--no-undefined -L$(DEPS)/lib -ldxvk_d3d9 -lSDL2 -llog -landroid
-TARGET_FLAGS += $(PGO_FLAGS)
+TARGET_FLAGS += $(PGO_FLAGS) $(if $(filter 1,$(SPORERE_VK11)),-DSPORERE_VK11)
 LDFLAGS += $(PGO_LDFLAGS)
 # Adreno: Turnip and libadrenotools from android/build-turnip.sh (arm64 only; built without them otherwise).
 TURNIP ?= $(HOME)/spore-re-data/android-turnip

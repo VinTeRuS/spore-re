@@ -1,0 +1,280 @@
+diff -ruN a/meson.build b/meson.build
+--- a/meson.build	2022-07-27 00:45:31.000000000 +0300
++++ b/meson.build	2026-11-14 16:11:29.975511886 +0200
+@@ -121,7 +121,7 @@
+   add_project_arguments('-DDXVK_NATIVE', language : 'cpp')
+ 
+   dxvk_wsi      = get_option('dxvk_native_wsi')
+-  dxvk_platform = target_machine.system()
++  dxvk_platform = target_machine.system() == 'android' ? 'linux' : target_machine.system()  # Spore Android port
+ 
+   if cpu_family == 'x86'
+     if dxvk_compiler.has_argument('-msse') and dxvk_compiler.has_argument('-msse2')
+diff -ruN a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+--- a/src/d3d9/d3d9_device.cpp	2022-07-27 00:45:31.000000000 +0300
++++ b/src/d3d9/d3d9_device.cpp	2026-11-14 16:15:58.282329002 +0200
+@@ -31,6 +31,9 @@
+ 
+ namespace dxvk {
+ 
++  extern bool g_dxsoNoClipDistance;  // dxso_compiler.cpp (Android port)
++
++
+   D3D9DeviceEx::D3D9DeviceEx(
+           D3D9InterfaceEx*       pParent,
+           D3D9Adapter*           pAdapter,
+@@ -58,6 +61,7 @@
+     if (canSWVP)
+       Logger::info("D3D9DeviceEx: Using extended constant set for software vertex processing.");
+ 
++    g_dxsoNoClipDistance = !m_dxvkDevice->features().core.features.shaderClipDistance;  // Android port
+     m_initializer      = new D3D9Initializer(m_dxvkDevice);
+     m_converter        = new D3D9FormatHelper(m_dxvkDevice);
+ 
+@@ -3836,7 +3840,7 @@
+     DxvkDeviceFeatures enabled = {};
+ 
+     // Geometry shaders are used for some meta ops
+-    enabled.core.features.geometryShader = VK_TRUE;
++    enabled.core.features.geometryShader = supported.core.features.geometryShader;  // Android port: optional
+     enabled.core.features.robustBufferAccess = VK_TRUE;
+     enabled.extRobustness2.robustBufferAccess2 = supported.extRobustness2.robustBufferAccess2;
+ 
+@@ -3854,30 +3858,30 @@
+     enabled.core.features.vertexPipelineStoresAndAtomics = supported.core.features.vertexPipelineStoresAndAtomics;
+ 
+     // DXVK Meta
+-    enabled.core.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
+-    enabled.core.features.imageCubeArray = VK_TRUE;
++    enabled.core.features.shaderStorageImageWriteWithoutFormat = supported.core.features.shaderStorageImageWriteWithoutFormat;  // Android port: optional
++    enabled.core.features.imageCubeArray = supported.core.features.imageCubeArray;  // Android port: optional
+ 
+     // SM1 level hardware
+-    enabled.core.features.depthClamp = VK_TRUE;
+-    enabled.core.features.depthBiasClamp = VK_TRUE;
+-    enabled.core.features.fillModeNonSolid = VK_TRUE;
++    enabled.core.features.depthClamp = supported.core.features.depthClamp;  // Android port: optional
++    enabled.core.features.depthBiasClamp = supported.core.features.depthBiasClamp;  // Android port: optional
++    enabled.core.features.fillModeNonSolid = supported.core.features.fillModeNonSolid;  // Android port: optional
+     enabled.core.features.pipelineStatisticsQuery = supported.core.features.pipelineStatisticsQuery;
+-    enabled.core.features.sampleRateShading = VK_TRUE;
++    enabled.core.features.sampleRateShading = supported.core.features.sampleRateShading;  // Android port: optional
+     enabled.core.features.samplerAnisotropy = supported.core.features.samplerAnisotropy;
+-    enabled.core.features.shaderClipDistance = VK_TRUE;
+-    enabled.core.features.shaderCullDistance = VK_TRUE;
++    enabled.core.features.shaderClipDistance = supported.core.features.shaderClipDistance;  // Android port: optional
++    enabled.core.features.shaderCullDistance = supported.core.features.shaderCullDistance;  // Android port: optional
+ 
+     // Ensure we support real BC formats and unofficial vendor ones.
+-    enabled.core.features.textureCompressionBC = VK_TRUE;
++    enabled.core.features.textureCompressionBC = supported.core.features.textureCompressionBC;  // Android port: optional
+ 
+     enabled.extDepthClipEnable.depthClipEnable = supported.extDepthClipEnable.depthClipEnable;
+     enabled.extHostQueryReset.hostQueryReset = supported.extHostQueryReset.hostQueryReset;
+ 
+     // SM2 level hardware
+-    enabled.core.features.occlusionQueryPrecise = VK_TRUE;
++    enabled.core.features.occlusionQueryPrecise = supported.core.features.occlusionQueryPrecise;  // Android port: optional
+ 
+     // SM3 level hardware
+-    enabled.core.features.multiViewport = VK_TRUE;
++    enabled.core.features.multiViewport = supported.core.features.multiViewport;  // Android port: optional
+     enabled.core.features.independentBlend = VK_TRUE;
+ 
+     // D3D10 level hardware supports this in D3D9 native.
+diff -ruN a/src/d3d9/d3d9_swapchain.cpp b/src/d3d9/d3d9_swapchain.cpp
+--- a/src/d3d9/d3d9_swapchain.cpp	2022-07-27 00:45:31.000000000 +0300
++++ b/src/d3d9/d3d9_swapchain.cpp	2026-11-14 16:16:47.308357890 +0200
+@@ -894,7 +894,7 @@
+     // Recreate swap chain if the previous present call failed
+     VkResult status = m_device->waitForSubmission(&m_presentStatus);
+ 
+-    if (status != VK_SUCCESS)
++    if (status != VK_SUCCESS && status != VK_SUBOPTIMAL_KHR)  // Android port: suboptimal every frame while rotated
+       RecreateSwapChain(m_vsync);
+   }
+ 
+diff -ruN a/src/dxso/dxso_compiler.cpp b/src/dxso/dxso_compiler.cpp
+--- a/src/dxso/dxso_compiler.cpp	2022-07-27 00:45:31.000000000 +0300
++++ b/src/dxso/dxso_compiler.cpp	2026-11-14 16:15:58.283431032 +0200
+@@ -412,8 +412,13 @@
+   }
+ 
+ 
++  // Android port: GPUs without shaderClipDistance (Mali) crash compiling ClipDistance outputs; user clip planes are
++  // then ignored. Set by D3D9DeviceEx from the device features.
++  bool g_dxsoNoClipDistance = false;
++
+   void DxsoCompiler::emitVsInit() {
+-    m_module.enableCapability(spv::CapabilityClipDistance);
++    if (!g_dxsoNoClipDistance)
++      m_module.enableCapability(spv::CapabilityClipDistance);
+ 
+     // Only VS needs this, because PS has
+     // non-indexable specialized output regs
+@@ -3725,7 +3730,8 @@
+       m_vs.functionId, 0, nullptr);
+     this->emitLinkerOutputSetup();
+ 
+-    this->emitVsClipping();
++    if (!g_dxsoNoClipDistance)
++      this->emitVsClipping();
+ 
+     this->emitFunctionEnd();
+   }
+diff -ruN a/src/dxvk/platform/dxvk_sdl2_exts.cpp b/src/dxvk/platform/dxvk_sdl2_exts.cpp
+--- a/src/dxvk/platform/dxvk_sdl2_exts.cpp	2022-07-27 00:45:31.000000000 +0300
++++ b/src/dxvk/platform/dxvk_sdl2_exts.cpp	2026-11-14 16:15:04.927074202 +0200
+@@ -13,6 +13,13 @@
+ 
+ 
+   DxvkNameSet DxvkPlatformExts::getInstanceExtensions() {
++#ifdef __ANDROID__
++    // Android port: SDL has a single window there, a dummy one would replace the game's
++    DxvkNameSet androidNames;
++    androidNames.add(VK_KHR_SURFACE_EXTENSION_NAME);
++    androidNames.add("VK_KHR_android_surface");
++    return androidNames;
++#endif
+     SDL_Window* window = SDL_CreateWindow(
+       "Dummy Window",
+       SDL_WINDOWPOS_UNDEFINED,
+diff -ruN a/src/util/sync/sync_spinlock.h b/src/util/sync/sync_spinlock.h
+--- a/src/util/sync/sync_spinlock.h	2022-07-27 00:45:31.000000000 +0300
++++ b/src/util/sync/sync_spinlock.h	2026-11-14 16:12:25.713148213 +0200
+@@ -21,7 +21,11 @@
+   void spin(uint32_t spinCount, const Fn& fn) {
+     while (unlikely(!fn())) {
+       for (uint32_t i = 1; i < spinCount; i++) {
++#if defined(__i386__) || defined(__x86_64__)
+         _mm_pause();
++#elif defined(__aarch64__)
++        __asm__ __volatile__("yield");
++#endif
+         if (fn())
+           return;
+       }
+diff -ruN a/src/util/util_bit.h b/src/util/util_bit.h
+--- a/src/util/util_bit.h	2022-07-27 00:45:31.000000000 +0300
++++ b/src/util/util_bit.h	2026-11-14 16:12:37.820592784 +0200
+@@ -1,6 +1,6 @@
+ #pragma once
+ 
+-#ifndef _MSC_VER
++#if !defined(_MSC_VER) && (defined(__i386__) || defined(__x86_64__))
+ #if defined(__WINE__) && defined(__clang__)
+ #pragma push_macro("_WIN32")
+ #undef _WIN32
+@@ -9,7 +9,7 @@
+ #if defined(__WINE__) && defined(__clang__)
+ #pragma pop_macro("_WIN32")
+ #endif
+-#else
++#elif defined(_MSC_VER)
+ #include <intrin.h>
+ #endif
+ 
+@@ -55,6 +55,8 @@
+     return _tzcnt_u32(n);
+     #elif defined(__BMI__)
+     return __tzcnt_u32(n);
++    #elif (defined(__GNUC__) || defined(__clang__)) && !(defined(__i386__) || defined(__x86_64__))
++    return n != 0 ? __builtin_ctz(n) : 32;
+     #elif defined(__GNUC__) || defined(__clang__)
+     uint32_t res;
+     uint32_t tmp;
+@@ -144,7 +146,7 @@
+   template<typename T>
+   bool bcmpeq(const T* a, const T* b) {
+     static_assert(alignof(T) >= 16);
+-    #if defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER)
++    #if (defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER)) && (defined(__i386__) || defined(__x86_64__) || defined(_M_X64) || defined(_M_IX86))
+     auto ai = reinterpret_cast<const __m128i*>(a);
+     auto bi = reinterpret_cast<const __m128i*>(b);
+ 
+diff -ruN a/src/util/util_vector.h b/src/util/util_vector.h
+--- a/src/util/util_vector.h	2022-07-27 00:45:31.000000000 +0300
++++ b/src/util/util_vector.h	2026-11-14 16:12:25.713031037 +0200
+@@ -151,10 +151,15 @@
+ 
+   inline Vector4 replaceNaN(Vector4 a) {
+     Vector4 result;
++#if defined(__i386__) || defined(__x86_64__)
+     __m128 value = _mm_load_ps(a.data);
+     __m128 mask  = _mm_cmpeq_ps(value, value);
+            value = _mm_and_ps(value, mask);
+     _mm_store_ps(result.data, value);
++#else
++    for (int i = 0; i < 4; i++)
++      result.data[i] = a.data[i] == a.data[i] ? a.data[i] : 0.0f;
++#endif
+     return result;
+   }
+ 
+diff -ruN a/src/vulkan/vulkan_loader.cpp b/src/vulkan/vulkan_loader.cpp
+--- a/src/vulkan/vulkan_loader.cpp	2022-07-27 00:45:31.000000000 +0300
++++ b/src/vulkan/vulkan_loader.cpp	2026-11-14 16:15:04.927355474 +0200
+@@ -1,8 +1,16 @@
++#include <cstdlib>
++
+ #include "vulkan_loader.h"
+ 
+ namespace dxvk::vk {
+ 
+-  static const PFN_vkGetInstanceProcAddr GetInstanceProcAddr = vkGetInstanceProcAddr;
++  // Android port: the host may pass a bundled driver's vkGetInstanceProcAddr (hex) in DXVK_VK_GIPA
++  static PFN_vkGetInstanceProcAddr hostGipa() {
++    const char* gipa = std::getenv("DXVK_VK_GIPA");
++    auto proc = gipa ? reinterpret_cast<PFN_vkGetInstanceProcAddr>(std::strtoull(gipa, nullptr, 16)) : nullptr;
++    return proc ? proc : &vkGetInstanceProcAddr;
++  }
++  static const PFN_vkGetInstanceProcAddr GetInstanceProcAddr = hostGipa();
+ 
+   PFN_vkVoidFunction LibraryLoader::sym(const char* name) const {
+     return dxvk::vk::GetInstanceProcAddr(nullptr, name);
+diff -ruN a/src/wsi/sdl2/wsi_presenter_sdl2.cpp b/src/wsi/sdl2/wsi_presenter_sdl2.cpp
+--- a/src/wsi/sdl2/wsi_presenter_sdl2.cpp	2022-07-27 00:45:31.000000000 +0300
++++ b/src/wsi/sdl2/wsi_presenter_sdl2.cpp	2026-11-14 16:16:22.635508691 +0200
+@@ -2,6 +2,19 @@
+ 
+ #include <SDL2/SDL.h>
+ #include <SDL2/SDL_vulkan.h>
++#ifdef __ANDROID__
++#include <SDL2/SDL_syswm.h>
++// the two Vulkan Android declarations needed, without vulkan_android.h (the NDK's is newer than these headers)
++struct ANativeWindow;
++struct SporeAndroidSurfaceCreateInfo {
++  VkStructureType sType;
++  const void* pNext;
++  VkFlags flags;
++  ANativeWindow* window;
++};
++typedef VkResult (VKAPI_PTR *SporePfnCreateAndroidSurface)(
++  VkInstance, const SporeAndroidSurfaceCreateInfo*, const VkAllocationCallbacks*, VkSurfaceKHR*);
++#endif
+ 
+ #include <wsi/native_wsi.h>
+ 
+@@ -13,6 +26,22 @@
+           VkSurfaceKHR*       pSurface) {
+     SDL_Window* window = fromHwnd(hWindow);
+ 
++#ifdef __ANDROID__
++    // Android port: the surface through the instance's own entry point (the Vulkan library may be one the host
++    // loaded); a window Android has taken away gives an error instead of a crash
++    SDL_SysWMinfo info;
++    SDL_VERSION(&info.version);
++    if (!SDL_GetWindowWMInfo(window, &info) || !info.info.android.window)
++      return VK_ERROR_SURFACE_LOST_KHR;
++    auto create = reinterpret_cast<SporePfnCreateAndroidSurface>(
++      vki->sym("vkCreateAndroidSurfaceKHR"));
++    if (!create)
++      return VK_ERROR_EXTENSION_NOT_PRESENT;
++    SporeAndroidSurfaceCreateInfo ci = { VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR };
++    ci.window = info.info.android.window;
++    return create(vki->instance(), &ci, nullptr, pSurface);
++#endif
++
+     return SDL_Vulkan_CreateSurface(window, vki->instance(), pSurface)
+          ? VK_SUCCESS
+          : VK_ERROR_OUT_OF_HOST_MEMORY;

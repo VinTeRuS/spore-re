@@ -38,6 +38,14 @@ namespace native {
 
 namespace {
 
+// The Vulkan version the bundled DXVK needs: 1.3 for DXVK 2.x, 1.1 for the build with dxvk-native 1.9
+// (make SPORERE_VK11=1, for older GPUs).
+#ifdef SPORERE_VK11
+constexpr uint32_t kMinVulkan = VK_API_VERSION_1_1;
+#else
+constexpr uint32_t kMinVulkan = VK_API_VERSION_1_3;
+#endif
+
 // Logs the system driver's GPU, for reports from phones where Turnip is not used. DXVK needs Vulkan 1.3: an older
 // system driver (Qualcomm's for Adreno 6xx/710 on many phones) cannot run the game, so say that plainly instead of
 // letting DXVK fail later with "no adapters found".
@@ -95,13 +103,14 @@ void LogSystemExtensions() {
 void LogSystemDevice() {
     std::string device;
     uint32_t api = SystemDriverApi(device);
-    if (!device.empty() && api < VK_API_VERSION_1_3) {
+    if (!device.empty() && api < kMinVulkan) {
         LogSystemExtensions();
         const bool adreno = access("/dev/kgsl-3d0", F_OK) == 0;
         char msg[512];
         snprintf(msg, sizeof(msg),
-                 "The GPU driver of this phone (%s) supports Vulkan %u.%u, and the game needs Vulkan 1.3. %s",
+                 "The GPU driver of this phone (%s) supports Vulkan %u.%u, and the game needs Vulkan %u.%u. %s",
                  device.c_str(), VK_API_VERSION_MAJOR(api), VK_API_VERSION_MINOR(api),
+                 VK_API_VERSION_MAJOR(kMinVulkan), VK_API_VERSION_MINOR(kMinVulkan),
                  adreno ? "The bundled Turnip driver did not work on this GPU either."
                         : "A system update may bring a newer driver.");
         StartupFailure(msg);
@@ -260,7 +269,7 @@ void SelectVulkanDriver() {
     } else if (std::string why = FailedBefore(); !why.empty()) {
         Log("vulkan: Turnip failed here before: %s", why.c_str());
         std::string device;
-        if (SystemDriverApi(device) >= VK_API_VERSION_1_3) {
+        if (SystemDriverApi(device) >= kMinVulkan) {
             Log("vulkan: using the system driver (vulkan_driver = turnip forces Turnip)");
             return;
         }
