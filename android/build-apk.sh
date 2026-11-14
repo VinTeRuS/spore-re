@@ -20,7 +20,8 @@ KEYSTORE=${KEYSTORE:-$HOME/.android/debug.keystore}
 ABIS=("${@:-arm64-v8a}")
 
 OUT=$ROOT/build/apk
-rm -rf "$OUT"
+# intermediates only: the APKs of the other variants (spore.apk, spore-vk11.apk) stay
+rm -rf "$OUT/classes" "$OUT/dex" "$OUT/pkg" "$OUT/base.apk" "$OUT/aligned.apk" "$OUT/res.zip"
 mkdir -p "$OUT/classes" "$OUT/dex" "$OUT/pkg"
 
 # Java: SDL's activity classes plus ours.
