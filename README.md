@@ -17,12 +17,13 @@ files in it: you need your own copy of Spore (see below).
 
 ## Installing
 
-Android 10+, arm64 (phones from about 2019 on), a GPU with Vulkan 1.3. Only tested on a Pixel 6 so far.
+Android 10+, arm64 (phones from about 2019 on). Only tested on a Pixel 6 so far. Two APKs: `spore.apk` for GPUs with
+Vulkan 1.3 (most phones), `spore-vk11.apk` for older GPUs whose driver only has Vulkan 1.1 (older Mali, PowerVR).
 
 1. Copy the game folders `Data`, `DataEP1`, `SporebinEP1` and `bp1content` from your Spore install to
    `Internal storage/Spore` on the phone (so there is `/sdcard/Spore/SporebinEP1/SporeApp.exe`).
 2. Install the APK, start it and allow "All files access".
-3. Optional: a file `sporere.ini` in that `Spore` folder with `locale = en-us` switches the game to English.
+3. The game follows the phone's language; Settings (round button -> gear) -> Language picks another one.
 
 ## Game version
 
