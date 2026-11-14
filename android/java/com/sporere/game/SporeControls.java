@@ -41,7 +41,16 @@ import java.util.Locale;
  * tribe and civilization: RMB (taps give orders); space: tool keys 1-4 and RMB; editors: Undo and Redo.
  */
 public class SporeControls extends View {
-    private static final int LEFT = MotionEvent.BUTTON_PRIMARY, RIGHT = MotionEvent.BUTTON_SECONDARY;
+    private static final int LEFT = MotionEvent.BUTTON_PRIMARY, RIGHT = MotionEvent.BUTTON_SECONDARY,
+            MIDDLE = MotionEvent.BUTTON_TERTIARY;
+
+    /**
+     * The button a two-finger drag holds to turn the camera: the middle one (the wheel) in the tribe and civilization
+     * stages, where the right button gives orders and does not turn; the right one elsewhere.
+     */
+    private int turnButton() {
+        return stage == Stage.TRIBE || stage == Stage.CIV ? MIDDLE : RIGHT;
+    }
     private static final int DOWN = MotionEvent.ACTION_DOWN, UP = MotionEvent.ACTION_UP, MOVE = MotionEvent.ACTION_MOVE;
     private static final long LONG_PRESS_MS = 500, LEFT_DELAY_MS = 60, DOUBLE_TAP_MS = 280;
     private static final int TEAL = 0xff40d6c8;
@@ -641,7 +650,7 @@ public class SporeControls extends View {
                     lastSpan = span(e);
                     wheelAccum = 0;
                     mouse(0, MOVE, camX, camY);
-                    mouse(RIGHT, DOWN, camX, camY);
+                    mouse(turnButton(), DOWN, camX, camY);
                 }
                 return true;
             case MotionEvent.ACTION_MOVE:
@@ -704,7 +713,7 @@ public class SporeControls extends View {
                 camY += (my - lastMidY) * speed();
                 lastMidX = mx;
                 lastMidY = my;
-                mouse(RIGHT, MOVE, camX, camY);
+                mouse(turnButton(), MOVE, camX, camY);
                 float s = span(e);
                 wheelAccum += (s - lastSpan) / (40 * density);  // one wheel step per 40 dp of pinch
                 lastSpan = s;
