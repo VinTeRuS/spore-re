@@ -607,6 +607,24 @@ public class SporeControls extends View {
         return sMode.value() == 1;
     }
 
+    // The keyboard types into the game through SDL's input connection (commitText, backspace, enter): without one
+    // a keyboard opened on this view had nowhere to send its text (planet names did not change).
+    @Override
+    public boolean onCheckIsTextEditor() {
+        return true;
+    }
+
+    @Override
+    public android.view.inputmethod.InputConnection onCreateInputConnection(
+            android.view.inputmethod.EditorInfo out) {
+        out.inputType = android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
+        out.imeOptions = android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI
+                | android.view.inputmethod.EditorInfo.IME_FLAG_NO_FULLSCREEN
+                | android.view.inputmethod.EditorInfo.IME_ACTION_DONE;
+        return org.libsdl.app.SporeText.connect(this);
+    }
+
     private void toggleKeyboard() {
         InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
         if (imm == null) return;
