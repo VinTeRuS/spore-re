@@ -297,8 +297,8 @@ public class SporeControls extends View {
                 return ru ? "Тап — выбрать, удержание — приказ, палец — двигать карту, два пальца — поворот, «Выбор» — рамка"
                           : "Tap to select, hold to order, drag to move the map, two fingers turn, Select for a box";
             case SPACE:
-                return ru ? "Космос: стик (W/S) — полёт, держи палец — лететь туда, тап — выбрать, два пальца — камера, +/− — высота"
-                          : "Space: stick (W/S) flies, hold a finger to fly there, tap to pick, two fingers turn, +/- altitude";
+                return ru ? "Космос: стик — полёт, держи палец — лететь туда, тап — выбрать, два пальца — камера, +/− — высота"
+                          : "Space: stick flies, hold a finger to fly there, tap to pick, two fingers turn, +/- altitude";
             case EDITOR:
                 return ru ? "Редактор: тяни детали пальцем, два пальца — камера, щипок — зум, коснись детали и \u25b2/\u25bc — размер"
                           : "Editor: drag parts, two fingers turn the camera, pinch to zoom, tap a part and \u25b2/\u25bc to resize it";
@@ -369,6 +369,7 @@ public class SporeControls extends View {
                 break;
         }
         if (stick != null) {
+            stick.useArrows(s == Stage.SPACE);
             // tribe and civilization: the map moves with a finger, the stick only when asked for (WASD button)
             boolean show = prefs.getBoolean("stick3_" + s.name(), s == Stage.CREATURE || s == Stage.SPACE);
             if (show) stick.setVisibility(View.VISIBLE);
@@ -570,6 +571,11 @@ public class SporeControls extends View {
         surface.setLayoutParams(lp);
         surfaceX = left;
         surfaceY = top;
+        try {  // the game picks its render size from the screen: it must use the narrower surface instead (else squashed)
+            android.system.Os.setenv("SPORERE_SURFACE_SIZE", (w - left - right) + "x" + (h - top - bottom), true);
+        } catch (android.system.ErrnoException ignored) {
+            // full-screen proportions then
+        }
         android.util.Log.i("sporere", "screen " + sScreen.value() + ": " + (w - left - right) + "x"
                 + (h - top - bottom) + " at " + left + "," + top);
     }
@@ -728,7 +734,7 @@ public class SporeControls extends View {
             if (mode == Mode.PENDING && !touchpad() && !dragTurnsCamera() && !dragPansMap() && !dragFlies())
                 handler.postDelayed(leftDown, LEFT_DELAY_MS * 3);
             if (mode == Mode.PENDING && !touchpad() && dragFlies()) {
-                handler.postDelayed(leftDown, 250);  // space: holding a finger still flies there too
+                handler.postDelayed(leftDown, 120);  // space: holding a finger still flies there too (the game waits 250 ms more)
             } else {
                 handler.postDelayed(longPress, LONG_PRESS_MS);
             }
@@ -1287,93 +1293,97 @@ public class SporeControls extends View {
     }
 
     private void drawPanel(Canvas c) {
-        float w = Math.min(getWidth() - 24 * density, 700 * density);
-        float row = 36 * density, rowGap = 6 * density, pad = 16 * density, header = 56 * density;
-        float section = 26 * density, footer = 62 * density;
+        // the whole panel shrinks to fit short screens (its bottom row was cut off at 720p-ish heights)
+        int rowsAll = Math.max(graphics.length, controlsSettings.length);
+        float units = 56 + 26 + rowsAll * (36 + 6) + 62 + 12;
+        float d = Math.min(density, getHeight() / units);
+        float w = Math.min(getWidth() - 24 * d, 700 * d);
+        float row = 36 * d, rowGap = 6 * d, pad = 16 * d, header = 56 * d;
+        float section = 26 * d, footer = 62 * d;
         int rows = Math.max(graphics.length, controlsSettings.length);
         float h = header + section + rows * (row + rowGap) + footer;
-        float left = (getWidth() - w) / 2, top = Math.max(6 * density, (getHeight() - h) / 2);
+        float left = (getWidth() - w) / 2, top = Math.max(6 * d, (getHeight() - h) / 2);
         panel.set(left, top, left + w, top + h);
         fill.setStyle(Paint.Style.FILL);
         fill.setColor(0xf20b1626);
-        c.drawRoundRect(panel, 20 * density, 20 * density, fill);
+        c.drawRoundRect(panel, 20 * d, 20 * d, fill);
         fill.setStyle(Paint.Style.STROKE);
-        fill.setStrokeWidth(1.5f * density);
+        fill.setStrokeWidth(1.5f * d);
         fill.setColor(0xff2a5a6a);
-        c.drawRoundRect(panel, 20 * density, 20 * density, fill);
+        c.drawRoundRect(panel, 20 * d, 20 * d, fill);
         fill.setStyle(Paint.Style.FILL);
         // header: title left, the credit under it, a close cross right
         text.setTextAlign(Paint.Align.LEFT);
         text.setColor(Color.WHITE);
-        text.setTextSize(19 * density);
-        c.drawText(ru() ? "Настройки" : "Settings", left + pad, top + 30 * density, text);
-        text.setTextSize(11 * density);
+        text.setTextSize(19 * d);
+        c.drawText(ru() ? "Настройки" : "Settings", left + pad, top + 30 * d, text);
+        text.setTextSize(11 * d);
         text.setColor(0xff8aa8b8);
         c.drawText(SetupActivity.CREDIT + (ru() ? "   ·   * — после перезапуска" : "   ·   * = after restart"),
-                left + pad, top + 47 * density, text);
-        float cs = 34 * density;
-        panelClose.set(left + w - pad - cs, top + 12 * density, left + w - pad, top + 12 * density + cs);
+                left + pad, top + 47 * d, text);
+        float cs = 34 * d;
+        panelClose.set(left + w - pad - cs, top + 12 * d, left + w - pad, top + 12 * d + cs);
         fill.setColor(0xff1a2c3c);
-        c.drawRoundRect(panelClose, 10 * density, 10 * density, fill);
+        c.drawRoundRect(panelClose, 10 * d, 10 * d, fill);
         text.setTextAlign(Paint.Align.CENTER);
         text.setColor(Color.WHITE);
-        text.setTextSize(18 * density);
-        c.drawText("×", panelClose.centerX(), panelClose.centerY() + 6 * density, text);
+        text.setTextSize(18 * d);
+        c.drawText("×", panelClose.centerX(), panelClose.centerY() + 6 * d, text);
         float colW = (w - pad * 3) / 2;
         String[] titles = {ru() ? "ГРАФИКА" : "GRAPHICS", ru() ? "УПРАВЛЕНИЕ" : "CONTROLS"};
         Setting[][] cols = {graphics, controlsSettings};
         for (int col = 0; col < 2; ++col) {
             float cx = left + pad + col * (colW + pad), y = top + header;
             text.setTextAlign(Paint.Align.LEFT);
-            text.setTextSize(11 * density);
+            text.setTextSize(11 * d);
             text.setColor(TEAL);
-            c.drawText(titles[col], cx + 4 * density, y + 14 * density, text);
+            c.drawText(titles[col], cx + 4 * d, y + 14 * d, text);
             y += section;
             for (Setting s : cols[col]) {
                 int i = java.util.Arrays.asList(settings).indexOf(s);
                 RectF rect = settingRects[i];
                 rect.set(cx, y, cx + colW, y + row);
                 fill.setColor(0xff142638);
-                c.drawRoundRect(rect, 10 * density, 10 * density, fill);
+                c.drawRoundRect(rect, 10 * d, 10 * d, fill);
                 text.setTextAlign(Paint.Align.LEFT);
-                text.setTextSize(13 * density);
+                text.setTextSize(13 * d);
                 text.setColor(Color.WHITE);
-                c.drawText(s.label() + (s.engine ? " *" : ""), rect.left + 12 * density, rect.centerY() + 5 * density,
+                c.drawText(s.label() + (s.engine ? " *" : ""), rect.left + 12 * d, rect.centerY() + 5 * d,
                         text);
                 // ‹ value ›
                 float vz = rect.width() * 0.48f, vl = rect.right - vz, mid = rect.right - vz / 2;
                 text.setTextAlign(Paint.Align.CENTER);
                 text.setColor(0xff6a8a9a);
-                text.setTextSize(16 * density);
-                c.drawText("‹", vl + 12 * density, rect.centerY() + 6 * density, text);
-                c.drawText("›", rect.right - 12 * density, rect.centerY() + 6 * density, text);
+                text.setTextSize(16 * d);
+                c.drawText("‹", vl + 12 * d, rect.centerY() + 6 * d, text);
+                c.drawText("›", rect.right - 12 * d, rect.centerY() + 6 * d, text);
                 text.setColor(TEAL);
-                text.setTextSize(13 * density);
-                c.drawText(s.names[s.index], mid, rect.centerY() + 5 * density, text);
+                text.setTextSize(13 * d);
+                c.drawText(s.names[s.index], mid, rect.centerY() + 5 * d, text);
                 y += row + rowGap;
             }
         }
         // footer: layout editor, support, source code, close
-        float by = top + h - footer + 12 * density, bh = 38 * density, bw = (w - pad * 5) / 4;
+        float by = top + h - footer + 12 * d, bh = 38 * d, bw = (w - pad * 5) / 4;
         panelLayout.set(left + pad, by, left + pad + bw, by + bh);
         panelSupport.set(panelLayout.right + pad, by, panelLayout.right + pad + bw, by + bh);
         panelGitHub.set(panelSupport.right + pad, by, panelSupport.right + pad + bw, by + bh);
         RectF closeBig = new RectF(panelGitHub.right + pad, by, panelGitHub.right + pad + bw, by + bh);
         fill.setColor(0xff1d5a6a);
-        c.drawRoundRect(panelLayout, 10 * density, 10 * density, fill);
+        c.drawRoundRect(panelLayout, 10 * d, 10 * d, fill);
         fill.setColor(0xff7a3a6e);
-        c.drawRoundRect(panelSupport, 10 * density, 10 * density, fill);
+        c.drawRoundRect(panelSupport, 10 * d, 10 * d, fill);
         fill.setColor(0xff2d333b);
-        c.drawRoundRect(panelGitHub, 10 * density, 10 * density, fill);
+        c.drawRoundRect(panelGitHub, 10 * d, 10 * d, fill);
         fill.setColor(0xff22384a);
-        c.drawRoundRect(closeBig, 10 * density, 10 * density, fill);
+        c.drawRoundRect(closeBig, 10 * d, 10 * d, fill);
         text.setTextAlign(Paint.Align.CENTER);
         text.setColor(Color.WHITE);
-        text.setTextSize(14 * density);
-        c.drawText(ru() ? "Раскладка" : "Layout", panelLayout.centerX(), panelLayout.centerY() + 5 * density, text);
-        c.drawText("Patreon", panelSupport.centerX(), panelSupport.centerY() + 5 * density, text);
-        c.drawText("GitHub", panelGitHub.centerX(), panelGitHub.centerY() + 5 * density, text);
-        c.drawText(ru() ? "Закрыть" : "Close", closeBig.centerX(), closeBig.centerY() + 5 * density, text);
+        text.setTextSize(14 * d);
+        c.drawText(ru() ? "Раскладка" : "Layout", panelLayout.centerX(), panelLayout.centerY() + 5 * d, text);
+        c.drawText("Patreon", panelSupport.centerX(), panelSupport.centerY() + 5 * d, text);
+        c.drawText("GitHub", panelGitHub.centerX(), panelGitHub.centerY() + 5 * d, text);
+        c.drawText(ru() ? "Закрыть" : "Close", closeBig.centerX(), closeBig.centerY() + 5 * d, text);
         panelCloseBig.set(closeBig);
     }
 

@@ -20,7 +20,19 @@ import org.libsdl.app.SDLActivity;
  */
 public class SporeStick extends View {
     private static final int TEAL = 0x40d6c8;
-    private static final int[] KEYS = {KeyEvent.KEYCODE_W, KeyEvent.KEYCODE_A, KeyEvent.KEYCODE_S, KeyEvent.KEYCODE_D};
+    private static final int[] WASD = {KeyEvent.KEYCODE_W, KeyEvent.KEYCODE_A, KeyEvent.KEYCODE_S, KeyEvent.KEYCODE_D};
+    // the space stage flies with the arrow keys (the game's own tip: "Use the arrow keys to move your spaceship")
+    private static final int[] ARROWS = {KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_LEFT,
+                                         KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT};
+    private int[] keys = WASD;
+
+    /** Arrow keys instead of W/A/S/D (space stage); whatever is held is released first. */
+    void useArrows(boolean arrows) {
+        int[] k = arrows ? ARROWS : WASD;
+        if (k == keys) return;
+        setKeys(false, false, false, false);
+        keys = k;
+    }
     // default places, as fractions of the screen
     static final float STICK_X = 0.13f, STICK_Y = 0.70f, JUMP_X = 0.79f, JUMP_Y = 0.84f;
 
@@ -151,8 +163,8 @@ public class SporeStick extends View {
         for (int i = 0; i < 4; ++i) {
             if (want[i] == held[i]) continue;
             held[i] = want[i];
-            if (want[i]) SDLActivity.onNativeKeyDown(KEYS[i]);
-            else SDLActivity.onNativeKeyUp(KEYS[i]);
+            if (want[i]) SDLActivity.onNativeKeyDown(keys[i]);
+            else SDLActivity.onNativeKeyUp(keys[i]);
         }
     }
 

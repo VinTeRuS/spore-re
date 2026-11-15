@@ -1,0 +1,52 @@
+diff -ru a/src/d3d9/d3d9_swapchain.cpp b/src/d3d9/d3d9_swapchain.cpp
+--- a/src/d3d9/d3d9_swapchain.cpp	2026-11-15 19:16:53.732868853 +0200
++++ b/src/d3d9/d3d9_swapchain.cpp	2026-11-15 19:17:05.724191840 +0200
+@@ -871,6 +871,7 @@
+       // transform (landscape); the compositor rotates, so present as is instead of recreating the swap chain -
+       // with a GPU idle wait - every frame. Unless the window itself changed size (it starts out portrait for a
+       // moment, or the device was rotated): then the swap chain is recreated, or the picture stays wrong.
++      m_surfaceLost |= submitStatus == VK_ERROR_SURFACE_LOST_KHR;
+       if ((submitStatus != VK_SUCCESS && submitStatus != VK_SUBOPTIMAL_KHR)
+        || (submitStatus == VK_SUBOPTIMAL_KHR && AndroidWindowResized()))
+         RecreateSwapChain();
+@@ -910,6 +911,7 @@
+ 
+ #ifdef __ANDROID__
+       while (status != VK_SUCCESS && (status != VK_SUBOPTIMAL_KHR || AndroidWindowResized())) {  // see above
++        m_surfaceLost |= status == VK_ERROR_SURFACE_LOST_KHR;
+ #else
+       while (status != VK_SUCCESS) {
+ #endif
+@@ -1064,7 +1066,18 @@
+     presenterDesc.imageCount      = PickImageCount(m_presentParams.BackBufferCount + 1);
+     presenterDesc.numFormats      = PickFormats(EnumerateFormat(m_presentParams.BackBufferFormat), presenterDesc.formats);
+ 
+-    VkResult vr = m_wctx->presenter->recreateSwapChain(presenterDesc);
++    VkResult vr;
++#ifdef __ANDROID__
++    if (std::exchange(m_surfaceLost, false)) {
++      Logger::info("D3D9SwapChainEx: surface lost, recreating surface");
++      vr = m_wctx->presenter->recreateSurface([this] (VkSurfaceKHR* surface) {
++        return CreateSurface(surface);
++      });
++      if (vr)
++        throw DxvkError(str::format("D3D9SwapChainEx: Failed to recreate surface: ", vr));
++    }
++#endif
++    vr = m_wctx->presenter->recreateSwapChain(presenterDesc);
+ 
+     if (vr == VK_ERROR_SURFACE_LOST_KHR) {
+       vr = m_wctx->presenter->recreateSurface([this] (VkSurfaceKHR* surface) {
+diff -ru a/src/d3d9/d3d9_swapchain.h b/src/d3d9/d3d9_swapchain.h
+--- a/src/d3d9/d3d9_swapchain.h	2026-11-15 19:16:53.732999404 +0200
++++ b/src/d3d9/d3d9_swapchain.h	2026-11-15 19:17:05.724306374 +0200
+@@ -171,6 +171,9 @@
+     uint32_t                  m_frameLatencyCap = 0;
+ 
+     bool                      m_dirty    = true;
++    // Android: the window was destroyed and recreated (Recent apps and back): the next swap chain needs a new
++    // VkSurfaceKHR, a swap chain on the old one may be created fine yet never reach the screen (Mali: black picture)
++    bool                      m_surfaceLost = false;
+ 
+     HWND                      m_window   = nullptr;
+     HMONITOR                  m_monitor  = nullptr;

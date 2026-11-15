@@ -1123,12 +1123,15 @@ M(IDirect3DQuery9, GetData) {
 std::atomic<uint32_t> g_game_mode{0};
 void UpdateGameMode() {
     constexpr uint32_t kGameModeManager = 0x015fd8b0;  // App::IGameModeManager::Get() reads this global
+    // the manager and its mode vector are heap objects: anything outside the guest heap arena (memory.cpp) is a
+    // stale or half-built manager (a read at 0x275d0 crashed a phone), so it counts as no mode
+    auto heap = [](uint32_t a) { return a >= 0x02000000u && a < 0x7fff0000u; };
     uint32_t mode = 0, mgr = R32(kGameModeManager);
-    if (mgr >= 0x10000 && mgr < 0xfff00000u) {
+    if (heap(mgr)) {
         int32_t idx = int32_t(R32(mgr + 0x28));
         uint32_t begin = R32(mgr + 0x14), end = R32(mgr + 0x18);
         uint32_t count = end >= begin ? (end - begin) / 24 : 0;
-        if (begin >= 0x10000 && count <= 64 && idx >= 0 && uint32_t(idx) < count) mode = R32(begin + 24 * uint32_t(idx) + 4);
+        if (heap(begin) && count <= 64 && idx >= 0 && uint32_t(idx) < count) mode = R32(begin + 24 * uint32_t(idx) + 4);
     }
     if (mode != g_game_mode.exchange(mode, std::memory_order_relaxed)) Log("game mode: %08x", mode);
 }

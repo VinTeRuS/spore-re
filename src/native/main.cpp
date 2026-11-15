@@ -521,6 +521,12 @@ int main(int argc, char** argv) {
         window_w = mode.w > mode.h ? mode.w : mode.h;  // landscape
         window_h = mode.w > mode.h ? mode.h : mode.w;
     }
+    // Settings > Screen 16:9 / Safe area: the game's surface is smaller than the screen (SporeControls.applyScreen);
+    // rendering at the screen's proportions squashed the picture into it
+    if (const char* s = getenv("SPORERE_SURFACE_SIZE")) {
+        int sw = 0, sh = 0;
+        if (sscanf(s, "%dx%d", &sw, &sh) == 2 && sw > 0 && sh > 0) window_w = sw, window_h = sh;
+    }
 #endif
     InitClientSize(window_w, window_h);
 
