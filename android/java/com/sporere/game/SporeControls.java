@@ -174,9 +174,9 @@ public class SporeControls extends View {
     // ---- layout editor ----
     // Every on-screen control can be moved: the menu handle, the stick, the jump button and six slots for the
     // stage's action buttons (1-4, Order, Select, Undo...). Places are fractions of the screen in prefs "lay_*".
-    private static final String[] SLOT_IDS = {"slot0", "slot1", "slot2", "slot3", "slot4", "slot5"};
+    private static final String[] SLOT_IDS = {"slot0", "slot1", "slot2", "slot3", "slot4", "slot5", "slot6"};
     private static final float[][] SLOT_DEFAULTS = {{0.94f, 0.30f}, {0.94f, 0.46f}, {0.94f, 0.62f}, {0.85f, 0.38f},
-            {0.85f, 0.54f}, {0.85f, 0.70f}};
+            {0.85f, 0.54f}, {0.85f, 0.70f}, {0.85f, 0.22f}};
     private boolean editLayout;
     private String editing;  // the element being dragged
     private final RectF editDone = new RectF(), editReset = new RectF();
@@ -188,6 +188,14 @@ public class SporeControls extends View {
 
     private float layY(String id, float def) {
         return prefs.getFloat("lay_" + id + "_y", def);
+    }
+
+    private float fpsDefX() {
+        return getWidth() > 0 ? (8 * density + surfaceX) / getWidth() : 0.02f;
+    }
+
+    private float fpsDefY() {
+        return getHeight() > 0 ? (getHeight() - 10 * density) / getHeight() : 0.97f;
     }
 
     private float scale() {
@@ -234,6 +242,8 @@ public class SporeControls extends View {
     private final List<Button> actions = new ArrayList<>();
     private boolean rightTaps;  // Order button: one-finger taps are right clicks (orders to the selected units)
     private boolean boxArmed;   // Select button: the next one-finger drag is a left drag (box selection)
+    private boolean holdLeft;   // space, LMB button: holding a finger holds the left button (beams, abduction,
+                                // terraforming tools) instead of flying
     private String hint;        // what the gestures do in this stage, shown for a few seconds after it starts
     private final Runnable hideHint = () -> {
         hint = null;
@@ -252,7 +262,7 @@ public class SporeControls extends View {
      * "use the right mouse button to fly"): a one-finger drag holds it with the cursor under the finger.
      */
     private boolean dragFlies() {
-        return !camLock && !boxArmed && stage == Stage.SPACE;
+        return !camLock && !boxArmed && !holdLeft && stage == Stage.SPACE;
     }
 
     /**
@@ -297,8 +307,8 @@ public class SporeControls extends View {
                 return ru ? "Тап — выбрать, удержание — приказ, палец — двигать карту, два пальца — поворот, «Выбор» — рамка"
                           : "Tap to select, hold to order, drag to move the map, two fingers turn, Select for a box";
             case SPACE:
-                return ru ? "Космос: стик — полёт, держи палец — лететь туда, тап — выбрать, два пальца — камера, +/− — высота"
-                          : "Space: stick flies, hold a finger to fly there, tap to pick, two fingers turn, +/- altitude";
+                return ru ? "Космос: стик — полёт, держи палец — лететь туда, ЛКМ — держать инструмент, два пальца — камера, +/− — высота"
+                          : "Space: stick flies, hold a finger to fly there, LMB to hold a tool, two fingers turn, +/- altitude";
             case EDITOR:
                 return ru ? "Редактор: тяни детали пальцем, два пальца — камера, щипок — зум, коснись детали и \u25b2/\u25bc — размер"
                           : "Editor: drag parts, two fingers turn the camera, pinch to zoom, tap a part and \u25b2/\u25bc to resize it";
@@ -340,6 +350,7 @@ public class SporeControls extends View {
         stage = s;
         rightTaps = false;
         boxArmed = false;
+        holdLeft = false;
         actions.clear();
         hint = hintFor(s);
         handler.removeCallbacks(hideHint);
@@ -357,6 +368,7 @@ public class SporeControls extends View {
                 for (int k = 1; k <= 4; ++k) actions.add(keyButton(String.valueOf(k), KeyEvent.KEYCODE_0 + k));
                 actions.add(keysButton("+", KeyEvent.KEYCODE_EQUALS, KeyEvent.KEYCODE_NUMPAD_ADD));
                 actions.add(keysButton("\u2212", KeyEvent.KEYCODE_MINUS, KeyEvent.KEYCODE_NUMPAD_SUBTRACT));
+                actions.add(new Button(ru() ? "ЛКМ" : "LMB", this::toggleHoldLeft));
                 break;
             case EDITOR:
                 actions.add(new Button("Undo", SporeControls::undo));
@@ -396,6 +408,11 @@ public class SporeControls extends View {
 
     private void toggleRightTaps() {
         rightTaps = !rightTaps;
+        invalidate();
+    }
+
+    private void toggleHoldLeft() {
+        holdLeft = !holdLeft;
         invalidate();
     }
 
@@ -569,6 +586,8 @@ public class SporeControls extends View {
         lp.leftMargin = left;
         lp.topMargin = top;
         surface.setLayoutParams(lp);
+        if (surface.getParent() instanceof android.view.View)  // the bars: black (pixels off on OLED screens)
+            ((android.view.View) surface.getParent()).setBackgroundColor(Color.BLACK);
         surfaceX = left;
         surfaceY = top;
         try {  // the game picks its render size from the screen: it must use the narrower surface instead (else squashed)
@@ -629,6 +648,29 @@ public class SporeControls extends View {
                 | android.view.inputmethod.EditorInfo.IME_FLAG_NO_FULLSCREEN
                 | android.view.inputmethod.EditorInfo.IME_ACTION_DONE;
         return org.libsdl.app.SporeText.connect(this);
+    }
+
+    // Keys sent to this view (it has the focus while the on-screen keyboard is open): the keyboard sends backspace
+    // as a key event when there is nothing of its own to delete (a name the game filled in), and that never reached
+    // the game. Back stays the system's (SporeActivity: Esc).
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (!forwardsKey(keyCode)) return super.onKeyDown(keyCode, event);
+        SDLActivity.onNativeKeyDown(keyCode);
+        return true;
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (!forwardsKey(keyCode)) return super.onKeyUp(keyCode, event);
+        SDLActivity.onNativeKeyUp(keyCode);
+        return true;
+    }
+
+    private static boolean forwardsKey(int keyCode) {
+        return keyCode != KeyEvent.KEYCODE_BACK && keyCode != KeyEvent.KEYCODE_VOLUME_UP
+                && keyCode != KeyEvent.KEYCODE_VOLUME_DOWN && keyCode != KeyEvent.KEYCODE_VOLUME_MUTE
+                && keyCode != KeyEvent.KEYCODE_POWER && keyCode != KeyEvent.KEYCODE_HOME;
     }
 
     private void toggleKeyboard() {
@@ -1015,6 +1057,7 @@ public class SporeControls extends View {
                 62 * density * sc, ru() ? "Стик" : "Stick"});
         out.add(new Object[] {"jump", layX("jump", SporeStick.JUMP_X) * w, layY("jump", SporeStick.JUMP_Y) * h,
                 36 * density * sc, ru() ? "Прыжок" : "Jump"});
+        out.add(new Object[] {"fps", layX("fps", fpsDefX()) * w, layY("fps", fpsDefY()) * h, 24 * density, "FPS"});
         for (int i = 0; i < SLOT_IDS.length; ++i) {
             String label = i < actions.size() ? actions.get(i).label : String.valueOf(i + 1);
             out.add(new Object[] {SLOT_IDS[i], layX(SLOT_IDS[i], SLOT_DEFAULTS[i][0]) * w,
@@ -1246,7 +1289,12 @@ public class SporeControls extends View {
         if (sShowFps.value() == 1) {
             text.setTextSize(13 * density);
             text.setTextAlign(Paint.Align.LEFT);
-            c.drawText(String.format(Locale.ROOT, "%.0f fps", nativeFps()), x, getHeight() - 10 * density, text);
+            // its place is in the layout editor; by default bottom left inside the game's picture (not under the
+            // camera cutout with Screen 16:9 / Safe area), with a shadow so it reads over the game's light UI
+            text.setShadowLayer(3 * density, 0, 0, Color.BLACK);
+            c.drawText(String.format(Locale.ROOT, "%.0f fps", nativeFps()), layX("fps", fpsDefX()) * getWidth(),
+                    layY("fps", fpsDefY()) * getHeight(), text);
+            text.clearShadowLayer();
             text.setTextAlign(Paint.Align.CENTER);
         }
         if (hint != null && !panelOpen) {
@@ -1276,7 +1324,8 @@ public class SporeControls extends View {
             float y = layY(SLOT_IDS[i], SLOT_DEFAULTS[i][1]) * getHeight();
             b.rect.set(x - r, y - r, x + r, y + r);
             boolean on = ((b.label.equals("Order") || b.label.equals("Приказ")) && rightTaps)
-                    || ((b.label.equals("Select") || b.label.equals("Выбор")) && boxArmed);
+                    || ((b.label.equals("Select") || b.label.equals("Выбор")) && boxArmed)
+                    || ((b.label.equals("LMB") || b.label.equals("ЛКМ")) && holdLeft);
             fill.setStyle(Paint.Style.FILL);
             fill.setColor(alphaOf(on ? 0xd0ffb03a : 0x900a1a2a));
             c.drawOval(b.rect, fill);
