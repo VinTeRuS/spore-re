@@ -231,6 +231,7 @@ public class SporeControls extends View {
 
     void setStick(SporeStick s) {
         stick = s;
+        s.under = this;
     }
 
     // ---- per-stage layout ----
@@ -435,6 +436,7 @@ public class SporeControls extends View {
     private long lastTapTime;
     private boolean longPressFired, moved;
     private final Runnable longPress = this::onLongPress;
+    private boolean holdDrag;  // tribe, civilization: the finger was held still, so a drag now drags with the left button
     private final Runnable leftDown = this::startLeft;
 
     // ---- overlay ----
@@ -481,6 +483,7 @@ public class SporeControls extends View {
             invalidate();
         }));
         buttons.add(new Button("Stages", this::unlockStages));
+        buttons.add(new Button(ru() ? "Читы" : "Cheats", () -> console(0)));
         buttons.add(new Button("⌨", this::toggleKeyboard));
         buttons.add(new Button("⚙", () -> {
             panelOpen = true;
@@ -509,30 +512,30 @@ public class SporeControls extends View {
      * console (Ctrl+Shift+C) with "levels -unlock", typed as text. Meant for the galaxy / main menu.
      */
     private void unlockStages() {
-        // Ctrl and Shift stay down while the game handles the C (sent at once, the game saw a plain C: Spore's
-        // screenshot key), then the command is typed as text.
-        Runnable comboDown = () -> {
-            SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_CTRL_LEFT);
-            SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_SHIFT_LEFT);
-        };
-        Runnable comboUp = () -> {
-            SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_SHIFT_LEFT);
-            SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_CTRL_LEFT);
-        };
-        handler.post(comboDown);
-        handler.postDelayed(() -> SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_C), 150);
-        handler.postDelayed(() -> SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_C), 350);
-        handler.postDelayed(comboUp, 500);
+        console(0);
         handler.postDelayed(() -> org.libsdl.app.SporeText.type("levels -unlock"), 1000);
         handler.postDelayed(() -> SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_ENTER), 1400);
         handler.postDelayed(() -> SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_ENTER), 1550);
-        // close the console the same way
-        handler.postDelayed(comboDown, 2200);
-        handler.postDelayed(() -> SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_C), 2350);
-        handler.postDelayed(() -> SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_C), 2550);
-        handler.postDelayed(comboUp, 2700);
+        console(2200);  // close it the same way
         android.widget.Toast.makeText(getContext(), "All stages unlocked (cheat console: levels -unlock)",
                 android.widget.Toast.LENGTH_LONG).show();
+    }
+
+    /**
+     * Ctrl+Shift+C opens or closes Spore's cheat console, after {@code at} ms. Ctrl and Shift stay down while the
+     * game handles the C (sent at once, the game saw a plain C: Spore's screenshot key).
+     */
+    private void console(long at) {
+        handler.postDelayed(() -> {
+            SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_CTRL_LEFT);
+            SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_SHIFT_LEFT);
+        }, at);
+        handler.postDelayed(() -> SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_C), at + 150);
+        handler.postDelayed(() -> SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_C), at + 350);
+        handler.postDelayed(() -> {
+            SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_SHIFT_LEFT);
+            SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_CTRL_LEFT);
+        }, at + 500);
     }
 
     /** Ctrl+Z: undo in the editors. */
@@ -693,7 +696,7 @@ public class SporeControls extends View {
     private void startLeft() {
         if (mode != Mode.PENDING) return;
         handler.removeCallbacks(longPress);
-        if (dragPansMap()) {
+        if (dragPansMap() && !holdDrag) {
             mode = Mode.PAN;
             return;
         }
@@ -719,6 +722,11 @@ public class SporeControls extends View {
     private void onLongPress() {
         if (mode != Mode.PENDING || moved) return;
         handler.removeCallbacks(leftDown);
+        if (dragPansMap()) {  // tribe, civilization: hold, then drag = left drag (a building from the palette)
+            holdDrag = true;
+            buzz(HapticFeedbackConstants.LONG_PRESS);
+            return;
+        }
         longPressFired = true;
         mode = Mode.NONE;
         buzz(HapticFeedbackConstants.LONG_PRESS);
@@ -739,6 +747,7 @@ public class SporeControls extends View {
         }
         if (action == MotionEvent.ACTION_DOWN) {
             longPressFired = false;
+            holdDrag = false;
             moved = false;
             if (panelOpen) {
                 mode = Mode.PANEL;
@@ -849,7 +858,9 @@ public class SporeControls extends View {
             case MotionEvent.ACTION_CANCEL:
                 handler.removeCallbacks(longPress);
                 handler.removeCallbacks(leftDown);
-                if (!longPressFired && !moved && (mode == Mode.PENDING || mode == Mode.CURSOR)) {
+                if (holdDrag && !moved && mode == Mode.PENDING) {
+                    click(px(x), py(y), RIGHT);  // held without moving: the long press right click
+                } else if (!longPressFired && !moved && (mode == Mode.PENDING || mode == Mode.CURSOR)) {
                     int button = rightTaps ? RIGHT : LEFT;
                     click(px(x), py(y), button);
                     lastTapTime = System.currentTimeMillis();
