@@ -526,7 +526,9 @@ const TexAdapt* AdaptOf(void* host) {
 TexAdapt PlanTexture(UINT w, UINT h, UINT levels, DWORD usage, D3DFORMAT format) {
     if (g_skip_mips < 0) {
 #ifdef __ANDROID__
-        g_skip_mips = SettingInt("texture_skip_mips", 1);
+        // phones under 5 GB RAM (4 GB ones): Android closed the game on the galaxy map (#29), so textures get smaller
+        const bool low_ram = double(sysconf(_SC_PHYS_PAGES)) * sysconf(_SC_PAGESIZE) < 5.0 * (1 << 30);
+        g_skip_mips = SettingInt("texture_skip_mips", low_ram ? 2 : 1);
 #else
         g_skip_mips = SettingInt("texture_skip_mips", 0);
 #endif

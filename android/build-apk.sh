@@ -39,6 +39,11 @@ cp "$OUT/dex/classes.dex" "$OUT/pkg/"
 for abi in "${ABIS[@]}"; do
     mkdir -p "$OUT/pkg/lib/$abi"
     cp "$ANDROID_BUILD/$abi/libmain.so" "$DEPS_ROOT/$abi"/lib/lib{SDL2,dxvk_d3d9}.so "$OUT/pkg/lib/$abi/"
+    # DXVK 1.9.2 from build-vk11.sh for Adreno 8xx (SporeActivity.adreno8xx); DXVK19= leaves it out
+    DXVK19=${DXVK19-$HOME/spore-re-data/android-deps-vk11}
+    if [ -n "$DXVK19" ] && [ -e "$DXVK19/$abi/lib/libdxvk_d3d9.so" ]; then
+        cp "$DXVK19/$abi/lib/libdxvk_d3d9.so" "$OUT/pkg/lib/$abi/libdxvk_d3d9_19.so"
+    fi
     # arm64: libmain.so targets ARMv8.2 + RCpc; the ARMv8.0 build for older cores (make ... ARM_ARCH=armv8-a
     # OUT=../../build/android/arm64-v8a-v80) ships next to it, SporeActivity picks one at run time.
     # The Turnip probe program (an executable, named like a library so the installer extracts it with the rest).

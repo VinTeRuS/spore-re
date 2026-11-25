@@ -61,4 +61,4 @@ cp -a "$ROOT/build/android/arm64-v8a-v80" "$ROOT/build/android-vk11/"
 rm -f "$ROOT/build/android-vk11/arm64-v8a-v80/vulkan_driver.o" "$ROOT/build/android-vk11/arm64-v8a-v80/libmain.so"
 make -C "$ROOT/src/native" -j"${JOBS:-3}" PLATFORM=android SPORERE_VK11=1 ARM_ARCH=armv8-a ${PGO:+PGO=$PGO} \
     OUT=../../build/android-vk11/arm64-v8a-v80
-DEPS_ROOT=$VK11 ANDROID_BUILD="$ROOT/build/android-vk11" APK_NAME=spore-vk11.apk "$ROOT/android/build-apk.sh"
+DXVK19= DEPS_ROOT=$VK11 ANDROID_BUILD="$ROOT/build/android-vk11" APK_NAME=spore-vk11.apk "$ROOT/android/build-apk.sh"

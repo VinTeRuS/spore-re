@@ -13,6 +13,7 @@ import android.widget.Toast;
 import android.view.WindowManager;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
 import java.util.Arrays;
@@ -25,7 +26,21 @@ import org.libsdl.app.SDLSurface;
 public class SporeActivity extends SDLActivity {
     @Override
     protected String[] getLibraries() {
-        return new String[] {"SDL2", "dxvk_d3d9", modernCpu() ? "main" : "main_v80"};
+        return new String[] {"SDL2", adreno8xx() ? "dxvk_d3d9_19" : "dxvk_d3d9", modernCpu() ? "main" : "main_v80"};
+    }
+
+    /**
+     * Adreno 8xx drew the frame as horizontal stripes with DXVK 2.x, DXVK 1.9.2 renders it right (#15, #26, #27), so
+     * there the APK's libdxvk_d3d9_19.so (DXVK 1.9.2, soname libdxvk_d3d9.so) is loaded and libmain links to it.
+     */
+    private boolean adreno8xx() {
+        if (!new File(getApplicationInfo().nativeLibraryDir, "libdxvk_d3d9_19.so").exists()) return false;
+        try (BufferedReader r = new BufferedReader(new FileReader("/sys/class/kgsl/kgsl-3d0/gpu_model"))) {
+            String model = r.readLine();
+            return model != null && model.startsWith("Adreno8");
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     /**
